@@ -1,0 +1,15 @@
+﻿[package]
+name = "runbridge-hello-world"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+runbridge = { path = "../..", features = ["cloud_run"] }
+env_logger = "0.10.0"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] } 
+
+[features]
+default = ["cloud_run"]
+cloud_run = []
+lambda = [] 

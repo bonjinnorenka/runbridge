@@ -1,0 +1,42 @@
+[package]
+name = "runbridge"
+version = "0.1.0"
+edition = "2021"
+description = "A Rust library for running serverless functions on AWS Lambda and Google Cloud Run"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "bootstrap"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.28", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.10"
+http = "0.2"
+bytes = "1.4"
+async-trait = "0.1"
+thiserror = "1.0"
+regex = "1.8"
+base64 = "0.13"
+
+# Lambda関連の依存関係
+lambda_runtime = { version = "0.13.0", optional = true }
+aws_lambda_events = { version = "0.16.0", optional = true }
+
+# Cloud Run関連の依存関係
+actix-web = { version = "4", optional = true }
+actix-rt = { version = "2", optional = true }
+
+[features]
+default = []
+lambda = ["lambda_runtime", "aws_lambda_events"]
+cloud_run = ["actix-web", "actix-rt"]
+
+[dev-dependencies]
+mockall = "0.11"
+reqwest = { version = "0.11", features = ["json"] }
+httpmock = "0.6"
