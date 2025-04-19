@@ -80,24 +80,6 @@ if (-not $roleExists) {
     Start-Sleep -Seconds 15
 }
 
-# Modify Cargo.toml to use Lambda feature
-Write-Host "Modifying Cargo.toml to use Lambda feature..."
-$cargoPath = "Cargo.toml"
-# Backup original file
-Copy-Item -Path $cargoPath -Destination "${cargoPath}.bak" -Force
-$cargoContent = Get-Content -Path $cargoPath -Raw
-
-# 修正：両方の可能性を考慮（デフォルトのcloud_runとカスタム設定を考慮）
-$modifiedCargo = $cargoContent -replace 'features = \["cloud_run"\]', 'features = ["lambda"]'
-
-# default featureも変更
-$modifiedCargo = $modifiedCargo -replace 'default = \["cloud_run"\]', 'default = ["lambda"]'
-
-# Save changes
-Set-Content -Path $cargoPath -Value $modifiedCargo -Encoding UTF8
-# Update dependencies
-cargo update
-
 # Check if Cross tool is installed
 Write-Host "Checking Cross installation..."
 if (!(Get-Command cross -ErrorAction SilentlyContinue)) {
@@ -107,11 +89,9 @@ if (!(Get-Command cross -ErrorAction SilentlyContinue)) {
 
 # Build using Cross (for Amazon Linux 2)
 Write-Host "Building for Lambda using cross..."
-cross build --release --target x86_64-unknown-linux-gnu
+cross build --release --target x86_64-unknown-linux-gnu --features lambda --no-default-features
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Error: Build failed"
-    # Restore original Cargo.toml
-    Move-Item -Path "${cargoPath}.bak" -Destination $cargoPath -Force
     exit 1
 }
 Write-Host "Build successful!"
@@ -139,8 +119,6 @@ try {
     Set-Location $workingDir
 } catch {
     Write-Host "Error: Failed to create deployment package: $_"
-    # Restore original Cargo.toml
-    Move-Item -Path "${cargoPath}.bak" -Destination $cargoPath -Force
     exit 1
 }
 
@@ -158,8 +136,6 @@ if ($functionExists) {
     $updateResult = aws lambda update-function-code --function-name $FUNCTION_NAME --zip-file fileb://$ZIP_PATH --region $REGION 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Error updating function code: $updateResult"
-        # Restore original Cargo.toml
-        Move-Item -Path "${cargoPath}.bak" -Destination $cargoPath -Force
         exit 1
     }
 } else {
@@ -178,8 +154,6 @@ if ($functionExists) {
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Error creating Lambda function: $createResult"
             Write-Host "IAM role propagation may be taking longer than expected. Try again in a minute."
-            # Restore original Cargo.toml
-            Move-Item -Path "${cargoPath}.bak" -Destination $cargoPath -Force
             exit 1
         }
     }
@@ -214,7 +188,3 @@ if ($LASTEXITCODE -eq 0) {
 } else {
     Write-Host "Could not retrieve function URL. Please check if the function was deployed successfully."
 }
-
-# Restore original Cargo.toml
-Write-Host "Restoring original Cargo.toml..."
-Move-Item -Path "${cargoPath}.bak" -Destination $cargoPath -Force

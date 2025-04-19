@@ -646,6 +646,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "cgi"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a71d44b66aa4d9229907c0126271215210037fc179437a2e92746ba6bc6e0a00"
+dependencies = [
+ "http 0.2.12",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2493,6 +2502,7 @@ dependencies = [
  "aws_lambda_events",
  "base64 0.13.1",
  "bytes",
+ "cgi",
  "env_logger",
  "http 0.2.12",
  "httpmock",
@@ -2503,6 +2513,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "temp-env",
  "thiserror",
  "tokio",
 ]
@@ -2876,6 +2887,15 @@ checksum = "a75fb188eb626b924683e3b95e3a48e63551fcfb51949de2f06a9d91dbee93c9"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "temp-env"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96374855068f47402c3121c6eed88d29cb1de8f3ab27090e273e420bdabcf050"
+dependencies = [
+ "parking_lot",
 ]
 
 [[package]]

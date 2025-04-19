@@ -58,7 +58,7 @@ async fn main() {
     env_logger::init();
 
     // アプリケーションの構築
-    let app = RunBridge::builder()
+    let _app = RunBridge::builder()
         .handler(handler::get("^/$", health_handler))
         .handler(handler::get("^/items$", get_items))
         .handler(handler::post("^/items$", create_item))

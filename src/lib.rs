@@ -12,6 +12,9 @@ pub mod lambda;
 #[cfg(feature = "cloud_run")]
 pub mod cloudrun;
 
+#[cfg(feature = "cgi")]
+pub mod cgi;
+
 pub use common::*;
 pub use error::*;
 pub use handler::*;

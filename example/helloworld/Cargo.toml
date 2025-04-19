@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-runbridge = { path = "../..", features = ["cloud_run"] }
+runbridge = { path = "../..", default-features = false, features = [] }
 env_logger = "0.10.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] } 
 
 [features]
-default = ["cloud_run"]
-cloud_run = []
-lambda = [] 
+default = ["cgi"]
+cloud_run = ["runbridge/cloud_run"]
+lambda = ["runbridge/lambda"] 
+cgi = ["runbridge/cgi"]

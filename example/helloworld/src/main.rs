@@ -66,15 +66,25 @@ async fn main() {
             std::process::exit(1);
         }
     }
+
+    #[cfg(feature = "cgi")]
+    {
+        if let Err(e) = runbridge::cgi::run_cgi(app).await {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    }
     
     // どちらのfeatureも有効でない場合はエラーメッセージを表示
-    #[cfg(not(any(feature = "lambda", feature = "cloud_run")))]
+    #[cfg(not(any(feature = "lambda", feature = "cloud_run", feature = "cgi")))]
     {
         println!("Error: Neither 'lambda' nor 'cloud_run' feature is enabled.");
         println!("Please build with either:");
         println!("  cargo build --features lambda");
         println!("  or");
         println!("  cargo build --features cloud_run");
+        println!("  or");
+        println!("  cargo build --features cgi");
         std::process::exit(1);
     }
 } 
