@@ -38,13 +38,17 @@ jobs:
       - name: Build documentation
         run: cargo doc --no-deps --document-private-items
 
+      - name: Add index.html redirect
+        run: |
+          echo '<meta http-equiv="refresh" content="0; url=runbridge/index.html">' > target/doc/index.html
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: 'target/doc/runbridge'
+          path: 'target/doc'
 
       - name: Deploy to GitHub Pages
         id: deployment
