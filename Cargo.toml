@@ -1,6 +1,6 @@
 [package]
 name = "runbridge"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A Rust library for running serverless functions on AWS Lambda and Google Cloud Run"
 authors = ["Your Name <your.email@example.com>"]

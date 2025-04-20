@@ -5,6 +5,7 @@ use std::env;
 
 use runbridge::{RunBridge, common::Request, handler, error::Error};
 
+/// サンプルのアイテム型
 #[derive(Serialize, Deserialize)]
 struct Item {
     id: String,
@@ -12,12 +13,13 @@ struct Item {
     description: Option<String>,
 }
 
+/// サンプルのアイテムリスト型
 #[derive(Serialize, Deserialize)]
 struct ItemList {
     items: Vec<Item>,
 }
 
-// サンプルのGETルートハンドラー
+/// サンプルのGETルートハンドラー
 fn health_handler(_req: Request) -> Result<serde_json::Value, Error> {
     Ok(serde_json::json!({
         "status": "ok",
@@ -25,7 +27,7 @@ fn health_handler(_req: Request) -> Result<serde_json::Value, Error> {
     }))
 }
 
-// サンプルのGETアイテム一覧ハンドラー
+/// サンプルのGETアイテム一覧ハンドラー
 fn get_items(_req: Request) -> Result<ItemList, Error> {
     // 仮のアイテムリストを返却
     let items = vec![
@@ -44,7 +46,7 @@ fn get_items(_req: Request) -> Result<ItemList, Error> {
     Ok(ItemList { items })
 }
 
-// 新しいアイテムを作成するハンドラー
+/// 新しいアイテムを作成するハンドラー
 fn create_item(_req: Request, item: Item) -> Result<Item, Error> {
     // 実際のアプリケーションではデータベースに保存する処理が入る
     info!("Creating new item: {}", item.name);
