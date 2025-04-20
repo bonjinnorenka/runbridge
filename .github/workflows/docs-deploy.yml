@@ -1,0 +1,55 @@
+name: Deploy Documentation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - '.github/workflows/docs-deploy.yml'
+  workflow_dispatch:
+
+# 権限の設定
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時に実行されるデプロイを1つに制限する
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-all-crates: "true"
+
+      - name: Build documentation
+        run: cargo doc --no-deps --document-private-items
+
+      - name: Add index.html redirect
+        run: |
+          echo '<meta http-equiv="refresh" content="0; url=vsing_external_video_data_api/index.html">' > target/doc/index.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: 'target/doc'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4 
