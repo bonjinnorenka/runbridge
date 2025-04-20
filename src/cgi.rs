@@ -77,20 +77,37 @@ fn get_cgi_headers() -> HashMap<String, String> {
     
     for (key, value) in env::vars() {
         if key.starts_with("HTTP_") {
-            // HTTP_CONTENT_TYPE -> Content-Type のように変換
-            let header_name = key[5..].replace('_', "-");
+            // HTTP_X_AUTH_TOKEN -> X-Auth-Token のように変換
+            let header_parts: Vec<&str> = key[5..].split('_').collect();
+            let header_name = header_parts.iter()
+                .map(|part| {
+                    // 各部分の先頭を大文字に、残りを小文字に
+                    let mut chars = part.chars();
+                    match chars.next() {
+                        None => String::new(),
+                        Some(c) => c.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
+                    }
+                })
+                .collect::<Vec<String>>()
+                .join("-");
+            
             headers.insert(header_name, value);
         } else if key == "CONTENT_TYPE" || key == "CONTENT_LENGTH" {
             // 特別なヘッダーを処理
-            let header_name = key.replace('_', "-");
-            let formatted_name = header_name.chars().enumerate().map(|(i, c)| {
-                if i == 0 || header_name.chars().nth(i - 1).unwrap_or(' ') == '-' {
-                    c.to_ascii_uppercase()
-                } else {
-                    c.to_ascii_lowercase()
-                }
-            }).collect::<String>();
-            headers.insert(formatted_name, value);
+            let header_parts: Vec<&str> = key.split('_').collect();
+            let header_name = header_parts.iter()
+                .map(|part| {
+                    // 各部分の先頭を大文字に、残りを小文字に
+                    let mut chars = part.chars();
+                    match chars.next() {
+                        None => String::new(),
+                        Some(c) => c.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
+                    }
+                })
+                .collect::<Vec<String>>()
+                .join("-");
+            
+            headers.insert(header_name, value);
         }
     }
     
@@ -137,6 +154,7 @@ fn read_request_body() -> Result<Option<Vec<u8>>, Error> {
 
 /// リクエストを処理する
 async fn process_request(app: RunBridge, request: Request) -> Result<Response, Error> {
+    // ハンドラを検索
     let handler = app.find_handler(&request.path, &request.method).ok_or_else(|| {
         Error::RouteNotFound(format!("{} {}", request.method, request.path))
     })?;
@@ -148,11 +166,30 @@ async fn process_request(app: RunBridge, request: Request) -> Result<Response, E
     }
     
     // ハンドラでリクエストを処理
-    let mut response = handler.handle(processed_request).await?;
+    let handler_result = handler.handle(processed_request).await;
     
-    // ミドルウェアの後処理を適用（逆順）
-    for middleware in app.middlewares().iter().rev() {
-        response = middleware.post_process(response).await?;
+    // レスポンスの処理
+    let mut response = match handler_result {
+        Ok(res) => res,
+        Err(e) => {
+            error!("Handler error: {}", e);
+            let status = e.status_code();
+            return Ok(Response::new(status)
+                .with_body(format!("Error: {}", e).as_bytes().to_vec()));
+        }
+    };
+    
+    // ミドルウェアの後処理を適用
+    for middleware in app.middlewares() {
+        match middleware.post_process(response).await {
+            Ok(processed) => response = processed,
+            Err(e) => {
+                error!("Middleware error in post-processing: {}", e);
+                let status = e.status_code();
+                response = Response::new(status)
+                    .with_body(format!("Error: {}", e).as_bytes().to_vec());
+            }
+        }
     }
     
     Ok(response)
@@ -221,13 +258,15 @@ mod tests {
         with_vars([
             ("HTTP_CONTENT_TYPE", Some("application/json")),
             ("HTTP_X_CUSTOM_HEADER", Some("test value")),
+            ("HTTP_X_AUTH_TOKEN", Some("secret-token")),
             ("CONTENT_LENGTH", Some("123")),
             ("UNRELATED_VAR", Some("should not be included")),
         ], || {
             let headers = get_cgi_headers();
             
-            assert_eq!(headers.get("CONTENT-TYPE"), Some(&"application/json".to_string()));
-            assert_eq!(headers.get("X-CUSTOM-HEADER"), Some(&"test value".to_string()));
+            assert_eq!(headers.get("Content-Type"), Some(&"application/json".to_string()));
+            assert_eq!(headers.get("X-Custom-Header"), Some(&"test value".to_string()));
+            assert_eq!(headers.get("X-Auth-Token"), Some(&"secret-token".to_string()));
             assert_eq!(headers.get("Content-Length"), Some(&"123".to_string()));
             assert_eq!(headers.get("UNRELATED_VAR"), None);
         });

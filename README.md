@@ -1,6 +1,6 @@
 # RunBridge
 
-AWS LambdaとGoogle Cloud Run向けの統一的なサーバーレスAPIフレームワーク。
+AWS LambdaとGoogle Cloud RunとCGI向けの統一的なサーバーレスAPIフレームワーク。
 
 このライブラリは、単一のコードベースでAWS LambdaとGoogle Cloud RunそしてCGI環境の全てに対応するRustアプリケーションを開発するためのフレームワークです。actix-webに似た操作感を提供しながら、プラットフォーム固有の違いを内部で吸収します。
 
