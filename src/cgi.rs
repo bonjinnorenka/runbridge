@@ -74,14 +74,12 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
 /// 環境変数からHTTPヘッダーを取得する
 fn get_cgi_headers() -> HashMap<String, String> {
     let mut headers = HashMap::new();
-    
     for (key, value) in env::vars() {
-        if key.starts_with("HTTP_") {
+        let header_name = if key.starts_with("HTTP_") {
             // HTTP_X_AUTH_TOKEN -> X-Auth-Token のように変換
             let header_parts: Vec<&str> = key[5..].split('_').collect();
             let header_name = header_parts.iter()
                 .map(|part| {
-                    // 各部分の先頭を大文字に、残りを小文字に
                     let mut chars = part.chars();
                     match chars.next() {
                         None => String::new(),
@@ -90,14 +88,11 @@ fn get_cgi_headers() -> HashMap<String, String> {
                 })
                 .collect::<Vec<String>>()
                 .join("-");
-            
-            headers.insert(header_name, value);
+            header_name
         } else if key == "CONTENT_TYPE" || key == "CONTENT_LENGTH" {
-            // 特別なヘッダーを処理
             let header_parts: Vec<&str> = key.split('_').collect();
             let header_name = header_parts.iter()
                 .map(|part| {
-                    // 各部分の先頭を大文字に、残りを小文字に
                     let mut chars = part.chars();
                     match chars.next() {
                         None => String::new(),
@@ -106,33 +101,77 @@ fn get_cgi_headers() -> HashMap<String, String> {
                 })
                 .collect::<Vec<String>>()
                 .join("-");
-            
-            headers.insert(header_name, value);
+            header_name
+        } else {
+            continue;
+        };
+        // ヘッダー名のバリデーション（英数字とハイフンのみ許可）
+        if !header_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            continue;
         }
+        // ヘッダー値のバリデーション（改行やコントロール文字を含む場合は除外）
+        if value.chars().any(|c| c == '\r' || c == '\n' || (c < ' ' && c != '\t')) {
+            continue;
+        }
+        headers.insert(header_name, value);
     }
-    
     headers
 }
 
 /// クエリ文字列をパースする
 fn parse_query_string(query_string: &str) -> HashMap<String, String> {
+    use std::borrow::Cow;
     let mut params = HashMap::new();
-    
+
     if query_string.is_empty() {
         return params;
     }
-    
+
     for pair in query_string.split('&') {
         let mut parts = pair.splitn(2, '=');
         if let Some(key) = parts.next() {
             let value = parts.next().unwrap_or("");
-            
-            // URLデコードが必要な場合は実装する
-            params.insert(key.to_string(), value.to_string());
+            // URLデコードを実装
+            let decoded_key = percent_decode(key);
+            let decoded_value = percent_decode(value);
+            params.insert(decoded_key, decoded_value);
         }
     }
-    
+
     params
+}
+
+/// パーセントエンコーディングをデコードする簡易関数
+fn percent_decode(input: &str) -> String {
+    // 標準ライブラリのみで実装
+    let bytes = input.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
+                result.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        } else if bytes[i] == b'+' {
+            result.push(b' ');
+            i += 1;
+            continue;
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
+
+fn from_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// リクエストボディを標準入力から読み込む
@@ -249,6 +288,20 @@ mod tests {
         assert_eq!(params.get("name"), Some(&"John".to_string()));
         assert_eq!(params.get("age"), Some(&"30".to_string()));
         assert_eq!(params.get("city"), Some(&"Tokyo".to_string()));
+    }
+
+    #[test]
+    fn test_parse_query_string_url_encoding() {
+        // URLエンコードされたクエリ文字列
+        let query = "name=%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A&city=Tokyo%20Station&lang=ja%2Den";
+        let params = parse_query_string(query);
+
+        // "あいうえお"（UTF-8でURLエンコード）
+        assert_eq!(params.get("name"), Some(&"あいうえお".to_string()));
+        // スペースが%20でエンコードされている
+        assert_eq!(params.get("city"), Some(&"Tokyo Station".to_string()));
+        // ハイフンが%2Dでエンコードされている
+        assert_eq!(params.get("lang"), Some(&"ja-en".to_string()));
     }
     
     #[test]

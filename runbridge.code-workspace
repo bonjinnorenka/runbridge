@@ -7,7 +7,8 @@
 	"settings": {
 		"rust-analyzer.linkedProjects": [
 			"Cargo.toml",
-			"example/helloworld/Cargo.toml"
+			"example/helloworld/Cargo.toml",
+			"example/middleware/Cargo.toml"
 		]
 	}
 }
