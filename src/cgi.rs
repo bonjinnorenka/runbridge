@@ -212,9 +212,7 @@ async fn process_request(app: RunBridge, request: Request) -> Result<Response, E
         Ok(res) => res,
         Err(e) => {
             error!("Handler error: {}", e);
-            let status = e.status_code();
-            return Ok(Response::new(status)
-                .with_body(format!("Error: {}", e).as_bytes().to_vec()));
+            return Ok(Response::from_error(&e));
         }
     };
     
@@ -224,9 +222,7 @@ async fn process_request(app: RunBridge, request: Request) -> Result<Response, E
             Ok(processed) => response = processed,
             Err(e) => {
                 error!("Middleware error in post-processing: {}", e);
-                let status = e.status_code();
-                response = Response::new(status)
-                    .with_body(format!("Error: {}", e).as_bytes().to_vec());
+                response = Response::from_error(&e);
             }
         }
     }

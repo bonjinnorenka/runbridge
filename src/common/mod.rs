@@ -186,6 +186,22 @@ impl Response {
     pub fn internal_server_error() -> Self {
         Self::new(500)
     }
+
+    /// Error型から固定メッセージのレスポンスを生成
+    pub fn from_error(error: &crate::error::Error) -> Self {
+        let status = error.status_code();
+        let message = match status {
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            403 => "Forbidden",
+            404 => "Not Found",
+            500 | 502 => "Internal Server Error",
+            _ => "Error",
+        };
+        Response::new(status)
+            .with_header("Content-Type", "text/plain")
+            .with_body(message.as_bytes().to_vec())
+    }
 }
 
 /// ハンドラーの特性

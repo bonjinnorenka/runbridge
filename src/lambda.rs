@@ -162,9 +162,7 @@ async fn lambda_handler(
         Ok(res) => res,
         Err(e) => {
             error!("Handler error: {}", e);
-            let status = e.status_code();
-            Response::new(status)
-                .with_body(format!("Error: {}", e).as_bytes().to_vec())
+            Response::from_error(&e)
         }
     };
 
@@ -175,9 +173,7 @@ async fn lambda_handler(
             Ok(processed) => res_processed = processed,
             Err(e) => {
                 error!("Middleware error in post-processing: {}", e);
-                let status = e.status_code();
-                res_processed = Response::new(status)
-                    .with_body(format!("Error: {}", e).as_bytes().to_vec());
+                res_processed = Response::from_error(&e);
             }
         }
     }
