@@ -1,0 +1,17 @@
+[package]
+name = "runbridge-hello-world-async"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+runbridge = { path = "../..", default-features = false, features = [] }
+env_logger = "0.10.0"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] } 
+futures = "0.3"
+
+[features]
+default = ["cgi"]
+cloud_run = ["runbridge/cloud_run"]
+lambda = ["runbridge/lambda"] 
+cgi = ["runbridge/cgi"] 

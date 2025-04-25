@@ -39,6 +39,7 @@ actix-rt = { version = "2", optional = true }
 # CGI関連の依存関係
 cgi = { version = "0.6", optional = true }
 temp-env = { version = "0.3", optional = true }
+futures = "0.3.31"
 
 [features]
 default = []
