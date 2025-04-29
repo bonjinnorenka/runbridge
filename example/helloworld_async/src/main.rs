@@ -10,6 +10,30 @@ struct GreetingResponse {
     elapsed_ms: u64,
 }
 
+// アイテム用の型定義
+#[derive(Serialize, Deserialize)]
+struct Item {
+    id: u32,
+    name: String,
+    price: f64,
+}
+
+// ベクター用のレスポンス型定義
+#[derive(Serialize, Deserialize)]
+struct ItemsResponse {
+    items: Vec<Item>,
+    count: usize,
+    timestamp: u64,
+}
+
+// 文字列ベクター用のレスポンス型定義
+#[derive(Serialize, Deserialize)]
+struct StringsResponse {
+    strings: Vec<String>,
+    count: usize,
+    timestamp: u64,
+}
+
 // 非同期GETリクエスト用ハンドラー関数
 async fn hello_async_handler(req: Request) -> Result<GreetingResponse, Error> {
     // 開始時間を記録
@@ -57,10 +81,89 @@ async fn hello_async_handler(req: Request) -> Result<GreetingResponse, Error> {
     })
 }
 
+// アイテムのベクターを返す非同期ハンドラー
+async fn items_async_handler(req: Request) -> Result<ItemsResponse, Error> {
+    // クエリパラメータからcountを取得
+    let count = req.query_params.get("count")
+        .and_then(|c| c.parse::<usize>().ok())
+        .unwrap_or(5);
+    
+    // 指定された数のアイテムを生成
+    let mut items = Vec::with_capacity(count);
+    for i in 1..=count {
+        items.push(Item {
+            id: i as u32,
+            name: format!("商品 {}", i),
+            price: (i as f64) * 100.0,
+        });
+    }
+    
+    // Unix timestampを取得
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let items_length = items.len();
+    
+    Ok(ItemsResponse {
+        items,
+        count: items_length,
+        timestamp: now,
+    })
+}
+
+// 文字列のベクターを返す非同期ハンドラー
+async fn strings_async_handler(req: Request) -> Result<StringsResponse, Error> {
+    // クエリパラメータからcountを取得
+    let count = req.query_params.get("count")
+        .and_then(|c| c.parse::<usize>().ok())
+        .unwrap_or(5);
+    
+    // 文字列のベクターを生成
+    let mut strings = Vec::with_capacity(count);
+    for i in 1..=count {
+        strings.push(format!("文字列 {}", i));
+    }
+    
+    // Unix timestampを取得
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let strings_length = strings.len();
+    
+    Ok(StringsResponse {
+        strings,
+        count: strings_length,
+        timestamp: now,
+    })
+}
+
+// 直接文字列ベクターを返す非同期ハンドラー
+async fn direct_strings_handler(req: Request) -> Result<Vec<String>, Error> {
+    // クエリパラメータからcountを取得
+    let count = req.query_params.get("count")
+        .and_then(|c| c.parse::<usize>().ok())
+        .unwrap_or(5);
+    
+    // 文字列のベクターを生成
+    let mut strings = Vec::with_capacity(count);
+    for i in 1..=count {
+        strings.push(format!("直接ベクター文字列 {}", i));
+    }
+    
+    Ok(strings)
+}
+
 // アプリケーションを構築する関数
 fn create_app() -> RunBridge {
     RunBridge::builder()
         .handler(handler::async_get("/hello", hello_async_handler))
+        .handler(handler::async_get("/items", items_async_handler))
+        .handler(handler::async_get("/strings", strings_async_handler))
+        .handler(handler::async_get("/direct-strings", direct_strings_handler))
         .build()
 }
 

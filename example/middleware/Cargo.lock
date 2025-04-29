@@ -1534,6 +1534,7 @@ dependencies = [
  "bytes",
  "cgi",
  "env_logger",
+ "futures",
  "http 0.2.12",
  "lambda_runtime",
  "log",
