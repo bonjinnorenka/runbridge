@@ -285,6 +285,25 @@ where
     AsyncRouteHandler::new(Method::DELETE, path, move |req, _| handler(req))
 }
 
+/// OPTIONSハンドラーを作成
+pub fn options<F, R>(path: impl Into<String>, handler: F) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
+where
+    F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
+    R: Serialize + Send + Sync + 'static,
+{
+    RouteHandler::new(Method::OPTIONS, path, move |req, _| handler(req))
+}
+
+/// 非同期OPTIONSハンドラーを作成
+pub fn async_options<F, R, Fut>(path: impl Into<String>, handler: F) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
+where
+    F: Fn(Request) -> Fut + Send + Sync + 'static,
+    R: Serialize + Send + Sync + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
+{
+    AsyncRouteHandler::new(Method::OPTIONS, path, move |req, _| handler(req))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +348,20 @@ mod tests {
         Ok(TestResponse {
             message: format!("Hello async, {}", body.name),
             value: body.value * 3,
+        })
+    }
+
+    fn test_options_handler(_req: Request) -> Result<TestResponse, Error> {
+        Ok(TestResponse {
+            message: "Hello from OPTIONS".to_string(),
+            value: 200,
+        })
+    }
+    
+    async fn test_async_options_handler(_req: Request) -> Result<TestResponse, Error> {
+        Ok(TestResponse {
+            message: "Hello from async OPTIONS".to_string(),
+            value: 204,
         })
     }
 
@@ -490,5 +523,57 @@ mod tests {
             Err(Error::InvalidRequestBody(_)) => {},
             _ => panic!("Expected InvalidRequestBody error"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_options_handler_matches() {
+        let handler = options("/cors-test", test_options_handler);
+        
+        assert!(handler.matches("/cors-test", &Method::OPTIONS));
+        assert!(!handler.matches("/cors-test", &Method::GET));
+        assert!(!handler.matches("/other", &Method::OPTIONS));
+    }
+    
+    #[tokio::test]
+    async fn test_options_handler_execution() {
+        let handler = options("/cors-test", test_options_handler);
+        let req = Request::new(Method::OPTIONS, "/cors-test".to_string());
+        
+        let result = handler.handle(req).await.unwrap();
+        
+        assert_eq!(result.status, 200);
+        
+        // レスポンスボディを検証
+        let body_str = String::from_utf8(result.body.unwrap()).unwrap();
+        let response: TestResponse = serde_json::from_str(&body_str).unwrap();
+        
+        assert_eq!(response.message, "Hello from OPTIONS");
+        assert_eq!(response.value, 200);
+    }
+    
+    #[tokio::test]
+    async fn test_async_options_handler_matches() {
+        let handler = async_options("/cors-test", test_async_options_handler);
+        
+        assert!(handler.matches("/cors-test", &Method::OPTIONS));
+        assert!(!handler.matches("/cors-test", &Method::GET));
+        assert!(!handler.matches("/other", &Method::OPTIONS));
+    }
+    
+    #[tokio::test]
+    async fn test_async_options_handler_execution() {
+        let handler = async_options("/cors-test", test_async_options_handler);
+        let req = Request::new(Method::OPTIONS, "/cors-test".to_string());
+        
+        let result = handler.handle(req).await.unwrap();
+        
+        assert_eq!(result.status, 200);
+        
+        // レスポンスボディを検証
+        let body_str = String::from_utf8(result.body.unwrap()).unwrap();
+        let response: TestResponse = serde_json::from_str(&body_str).unwrap();
+        
+        assert_eq!(response.message, "Hello from async OPTIONS");
+        assert_eq!(response.value, 204);
     }
 }
