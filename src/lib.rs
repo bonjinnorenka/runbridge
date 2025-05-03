@@ -46,6 +46,13 @@ impl RunBridgeBuilder {
         H: common::Handler + 'static
     {
         self.handlers.push(Box::new(handler));
+        // ハンドラーを追加するたびにパスの `/` の数で降順ソート
+        self.handlers.sort_unstable_by(|a, b| {
+            let count_a = a.path_pattern().matches('/').count();
+            let count_b = b.path_pattern().matches('/').count();
+            // 降順ソート (多い方が先)
+            count_b.cmp(&count_a)
+        });
         self
     }
 

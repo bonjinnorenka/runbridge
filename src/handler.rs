@@ -141,6 +141,11 @@ where
         }
     }
 
+    // 追加: パスパターンを返すメソッドの実装
+    fn path_pattern(&self) -> &str {
+        &self.path_pattern
+    }
+
     async fn handle(&self, req: Request) -> Result<Response, Error> {
         // リクエストボディをJSONとしてパース（存在する場合）
         let body_data = if req.body.is_some() {
@@ -184,6 +189,11 @@ where
                 path == self.path_pattern.trim_start_matches('^').trim_end_matches('$')
             }
         }
+    }
+
+    // 追加: パスパターンを返すメソッドの実装
+    fn path_pattern(&self) -> &str {
+        &self.path_pattern
     }
 
     async fn handle(&self, req: Request) -> Result<Response, Error> {

@@ -210,6 +210,9 @@ pub trait Handler: Send + Sync {
     /// パスとメソッドがこのハンドラにマッチするかどうかを判定
     fn matches(&self, path: &str, method: &Method) -> bool;
     
+    /// ハンドラに関連付けられたパスパターン文字列を取得
+    fn path_pattern(&self) -> &str;
+
     /// リクエストを処理
     async fn handle(&self, req: Request) -> Result<Response, Error>;
 }
