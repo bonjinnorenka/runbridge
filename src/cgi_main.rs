@@ -23,6 +23,7 @@ async fn main() {
     let app = RunBridge::builder()
         .handler(sample_handler::HelloHandler::new())
         .handler(sample_handler::EchoHandler::new())
+        .handler(sample_handler::PanicHandler::new())
         .build();
     
     // CGI処理の実行

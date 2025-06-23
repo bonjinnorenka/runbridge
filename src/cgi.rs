@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use std::env;
 use std::io::{self, Read, Write};
 use log::{debug, error, info};
+use std::fs::OpenOptions;
+use chrono::Local;
+use tokio::task;
 
 use crate::common::{Method, Request, Response};
 use crate::error::Error;
@@ -47,20 +50,42 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
     // リクエストを処理
     debug!("Processing CGI request: {} {}", method, path);
     
-    let response = match process_request(app, request).await {
-        Ok(response) => response,
-        Err(err) => {
-            error!("Error processing request: {:?}", err);
-            match err {
-                Error::RouteNotFound(msg) => {
-                    Response::not_found()
+    // ハンドラ内でのpanicを検知するためにspawnしてJoinErrorを検査
+    let task_result = task::spawn(async move {
+        process_request(app, request).await
+    }).await;
+
+    let response = match task_result {
+        // タスクが正常終了し、かつハンドラがResult::Ok/Errを返した場合
+        Ok(inner_result) => match inner_result {
+            Ok(res) => res,
+            Err(err) => {
+                error!("Error processing request: {:?}", err);
+                log_error_to_file(&format!("Handler returned error at {} {}: {:?}", method, path, err));
+                match err {
+                    Error::RouteNotFound(msg) => {
+                        Response::not_found()
+                            .with_header("Content-Type", "text/plain")
+                            .with_body(format!("Not Found: {}", msg).into_bytes())
+                    }
+                    _ => Response::internal_server_error()
                         .with_header("Content-Type", "text/plain")
-                        .with_body(format!("Not Found: {}", msg).into_bytes())
+                        .with_body(format!("Internal Server Error: {}", err).into_bytes())
                 }
-                _ => Response::internal_server_error()
-                    .with_header("Content-Type", "text/plain")
-                    .with_body(format!("Internal Server Error: {}", err).into_bytes())
             }
+        },
+        // タスクがpanicした場合
+        Err(join_err) => {
+            let panic_info = if join_err.is_panic() {
+                "panic occurred in handler".to_string()
+            } else {
+                format!("task cancelled: {}", join_err)
+            };
+            error!("{}", panic_info);
+            log_error_to_file(&format!("{} at {} {}", panic_info, method, path));
+            Response::internal_server_error()
+                .with_header("Content-Type", "text/plain")
+                .with_body("Internal Server Error".as_bytes().to_vec())
         }
     };
     
@@ -120,7 +145,6 @@ fn get_cgi_headers() -> HashMap<String, String> {
 
 /// クエリ文字列をパースする
 fn parse_query_string(query_string: &str) -> HashMap<String, String> {
-    use std::borrow::Cow;
     let mut params = HashMap::new();
 
     if query_string.is_empty() {
@@ -270,6 +294,18 @@ fn write_response(response: Response) -> Result<(), Error> {
     }
     
     Ok(())
+}
+
+/// エラー内容をログファイルに追記する
+fn log_error_to_file(message: &str) {
+    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("runbridge_error.log")
+    {
+        let _ = writeln!(file, "[{}] {}", timestamp, message);
+    }
 }
 
 #[cfg(test)]

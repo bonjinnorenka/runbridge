@@ -59,8 +59,8 @@ fn test_cgi_echo_endpoint_get() {
     assert!(stdout.contains("\"path\":\"/echo\""));
     assert!(stdout.contains("\"name\":\"test\""));
     assert!(stdout.contains("\"value\":\"123\""));
-    assert!(stdout.contains("\"CONTENT-TYPE\":\"application/json\""));
-    assert!(stdout.contains("\"X-CUSTOM-HEADER\":\"TestValue\""));
+    assert!(stdout.contains("\"Content-Type\":\"application/json\""));
+    assert!(stdout.contains("\"X-Custom-Header\":\"TestValue\""));
 }
 
 #[test]
@@ -110,6 +110,26 @@ fn test_cgi_not_found() {
     
     // ステータスコードが404であることを確認
     assert!(stdout.contains("Status: 404 Not Found"));
+}
+
+#[test]
+fn test_cgi_panic_handling() {
+    let output = run_cgi_with_env(
+        vec![
+            ("REQUEST_METHOD", Some("GET")),
+            ("PATH_INFO", Some("/panic")),
+            ("QUERY_STRING", Some("")),
+        ],
+        "".as_bytes(),
+    );
+
+    // 出力を確認
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    
+    // パニックが発生しても500エラーが返されることを確認
+    assert!(stdout.contains("Status: 500 Internal Server Error"));
+    assert!(stdout.contains("Content-Type: text/plain"));
+    assert!(stdout.contains("Internal Server Error"));
 }
 
 /// CGI環境をシミュレートして実行

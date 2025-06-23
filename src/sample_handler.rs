@@ -50,6 +50,31 @@ impl Handler for HelloHandler {
 /// リクエスト情報をエコーするハンドラ
 pub struct EchoHandler;
 
+/// パニックテスト用ハンドラ
+pub struct PanicHandler;
+
+impl PanicHandler {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Handler for PanicHandler {
+    fn matches(&self, path: &str, method: &Method) -> bool {
+        path == "/panic" && *method == Method::GET
+    }
+
+    fn path_pattern(&self) -> &str {
+        "/panic"
+    }
+    
+    async fn handle(&self, _req: Request) -> Result<Response, Error> {
+        info!("Handling Panic request - this will panic!");
+        panic!("Test panic from handler");
+    }
+}
+
 impl EchoHandler {
     pub fn new() -> Self {
         Self
