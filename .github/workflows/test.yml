@@ -85,8 +85,20 @@ jobs:
           if [ -d "$example_dir" ] && [ -f "$example_dir/Cargo.toml" ]; then
             echo "Building example: $(basename $example_dir)"
             cd "$example_dir"
-            cargo check --all-features
-            cargo build --all-features
+            # デフォルト機能でビルド
+            echo "  - Building with default features"
+            cargo check
+            cargo build
+            # 各機能を個別にテスト
+            echo "  - Building with lambda feature"
+            cargo check --features lambda
+            cargo build --features lambda
+            echo "  - Building with cloud_run feature"  
+            cargo check --features cloud_run
+            cargo build --features cloud_run
+            echo "  - Building with cgi feature"
+            cargo check --features cgi
+            cargo build --features cgi
             cd - > /dev/null
           fi
         done
@@ -95,8 +107,20 @@ jobs:
       run: |
         if [ -f "examples/custom_headers.rs" ]; then
           echo "Checking examples directory files..."
+          # デフォルト機能でチェック
+          echo "  - Checking with default features"
           cargo check --examples
           cargo build --examples
+          # 各機能を個別にテスト
+          echo "  - Checking with lambda feature"
+          cargo check --examples --features lambda
+          cargo build --examples --features lambda
+          echo "  - Checking with cloud_run feature"
+          cargo check --examples --features cloud_run
+          cargo build --examples --features cloud_run
+          echo "  - Checking with cgi feature"
+          cargo check --examples --features cgi
+          cargo build --examples --features cgi
         fi
 
   coverage:
