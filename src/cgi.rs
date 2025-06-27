@@ -39,13 +39,10 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
     let body = read_request_body()?;
     
     // リクエストを構築
-    let request = Request {
-        method,
-        path: path.clone(),
-        query_params,
-        headers,
-        body,
-    };
+    let mut request = Request::new(method, path.clone());
+    request.query_params = query_params;
+    request.headers = headers;
+    request.body = body;
     
     // リクエストを処理
     debug!("Processing CGI request: {} {}", method, path);

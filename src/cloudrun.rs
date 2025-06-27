@@ -63,13 +63,11 @@ async fn convert_request(
     // リクエストボディの処理
     let body = body.map(|b| b.to_vec());
 
-    Request {
-        method,
-        path,
-        query_params,
-        headers,
-        body,
-    }
+    let mut request = Request::new(method, path);
+    request.query_params = query_params;
+    request.headers = headers;
+    request.body = body;
+    request
 }
 
 /// 共通形式のResponseからactix-webのHttpResponseに変換

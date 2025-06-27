@@ -58,13 +58,10 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Request {
     });
 
     // Requestオブジェクトの構築
-    let mut request = Request {
-        method,
-        path,
-        query_params,
-        headers,
-        body,
-    };
+    let mut request = Request::new(method, path);
+    request.query_params = query_params;
+    request.headers = headers;
+    request.body = body;
 
     // パスパラメータの処理
     for (key, value) in event.path_parameters.iter() {

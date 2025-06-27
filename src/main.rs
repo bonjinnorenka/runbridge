@@ -59,19 +59,18 @@ async fn main() {
     // ロガーの初期化
     env_logger::init();
 
-    // アプリケーションの構築
-    let app = RunBridge::builder()
-        .handler(handler::get("^/$", health_handler))
-        .handler(handler::get("^/items$", get_items))
-        .handler(handler::post("^/items$", create_item))
-        .build();
-
     info!("Starting RunBridge application");
 
     // 環境に応じて実行方法を切り替え
     #[cfg(feature = "lambda")]
     {
         info!("Running as AWS Lambda");
+        let app = RunBridge::builder()
+            .handler(handler::get("^/$", health_handler))
+            .handler(handler::get("^/items$", get_items))
+            .handler(handler::post("^/items$", create_item))
+            .build();
+            
         if let Err(e) = runbridge::lambda::run_lambda(app).await {
             eprintln!("Lambda error: {}", e);
             std::process::exit(1);
@@ -89,6 +88,13 @@ async fn main() {
         };
         let host = "0.0.0.0";
         info!("Running as HTTP server on port {}", port);
+        
+        let app = RunBridge::builder()
+            .handler(handler::get("^/$", health_handler))
+            .handler(handler::get("^/items$", get_items))
+            .handler(handler::post("^/items$", create_item))
+            .build();
+            
         if let Err(e) = runbridge::cloudrun::run_cloud_run(app, host, port).await {
             eprintln!("Cloud Run error: {}", e);
             std::process::exit(1);

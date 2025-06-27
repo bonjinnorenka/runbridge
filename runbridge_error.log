@@ -1,3 +1,5 @@
 [2025-06-24 06:40:57] Handler returned error: RouteNotFound("GET /not-exists")
 [2025-06-24 06:41:25] Handler returned error: RouteNotFound("GET /not-exists")
 [2025-06-24 06:43:30] panic occurred in handler
+[2025-06-27 17:51:33] Handler returned error at GET /not-exists: RouteNotFound("GET /not-exists")
+[2025-06-27 17:51:33] panic occurred in handler at GET /panic
