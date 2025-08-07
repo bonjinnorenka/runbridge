@@ -3,17 +3,21 @@
 //! 環境変数と標準入力からリクエストを構築し、
 //! 標準出力にHTTPレスポンスフォーマットで出力するための機能を提供します。
 
+use chrono::Local;
+use log::{debug, error, info};
 use std::collections::HashMap;
 use std::env;
-use std::io::{self, Read, Write};
-use log::{debug, error, info};
 use std::fs::OpenOptions;
-use chrono::Local;
+use std::io::{self, Read, Write};
 use tokio::task;
 
 use crate::common::{Method, Request, Response};
 use crate::error::Error;
 use crate::RunBridge;
+
+/// Default maximum allowed size for a CGI request body (5MB).
+/// The limit can be overridden with the `RUNBRIDGE_MAX_CONTENT_LENGTH` environment variable.
+const DEFAULT_MAX_CONTENT_LENGTH: usize = 5 * 1024 * 1024;
 
 /// CGIリクエスト情報をRunBridgeリクエストに変換し、処理を実行する
 pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
@@ -21,36 +25,45 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
     let method_str = env::var("REQUEST_METHOD").map_err(|_| {
         Error::InvalidRequestBody("REQUEST_METHOD environment variable not set".to_string())
     })?;
-    
-    let method = Method::from_str(&method_str).ok_or_else(|| {
-        Error::InvalidRequestBody(format!("Invalid HTTP method: {}", method_str))
-    })?;
-    
+
+    let method = Method::from_str(&method_str)
+        .ok_or_else(|| Error::InvalidRequestBody(format!("Invalid HTTP method: {}", method_str)))?;
+
     let path = env::var("PATH_INFO").unwrap_or_else(|_| "/".to_string());
     let query_string = env::var("QUERY_STRING").unwrap_or_default();
-    
+
     // クエリパラメータを解析
     let query_params = parse_query_string(&query_string);
-    
+
     // ヘッダーを取得
     let headers = get_cgi_headers();
-    
+
     // ボディを読み込む
-    let body = read_request_body()?;
-    
+    let body = match read_request_body() {
+        Ok(b) => b,
+        Err(err) => {
+            error!("Error reading request body: {:?}", err);
+            log_error_to_file(&format!(
+                "Error reading request body at {} {}: {:?}",
+                method, path, err
+            ));
+            let response = Response::from_error(&err);
+            write_response(response)?;
+            return Ok(());
+        }
+    };
+
     // リクエストを構築
     let mut request = Request::new(method, path.clone());
     request.query_params = query_params;
     request.headers = headers;
     request.body = body;
-    
+
     // リクエストを処理
     debug!("Processing CGI request: {} {}", method, path);
-    
+
     // ハンドラ内でのpanicを検知するためにspawnしてJoinErrorを検査
-    let task_result = task::spawn(async move {
-        process_request(app, request).await
-    }).await;
+    let task_result = task::spawn(async move { process_request(app, request).await }).await;
 
     let response = match task_result {
         // タスクが正常終了し、かつハンドラがResult::Ok/Errを返した場合
@@ -58,16 +71,17 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
             Ok(res) => res,
             Err(err) => {
                 error!("Error processing request: {:?}", err);
-                log_error_to_file(&format!("Handler returned error at {} {}: {:?}", method, path, err));
+                log_error_to_file(&format!(
+                    "Handler returned error at {} {}: {:?}",
+                    method, path, err
+                ));
                 match err {
-                    Error::RouteNotFound(msg) => {
-                        Response::not_found()
-                            .with_header("Content-Type", "text/plain")
-                            .with_body(format!("Not Found: {}", msg).into_bytes())
-                    }
+                    Error::RouteNotFound(msg) => Response::not_found()
+                        .with_header("Content-Type", "text/plain")
+                        .with_body(format!("Not Found: {}", msg).into_bytes()),
                     _ => Response::internal_server_error()
                         .with_header("Content-Type", "text/plain")
-                        .with_body(format!("Internal Server Error: {}", err).into_bytes())
+                        .with_body(format!("Internal Server Error: {}", err).into_bytes()),
                 }
             }
         },
@@ -85,10 +99,10 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
                 .with_body("Internal Server Error".as_bytes().to_vec())
         }
     };
-    
+
     // レスポンスを標準出力に書き出す
     write_response(response)?;
-    
+
     info!("CGI request processed successfully");
     Ok(())
 }
@@ -100,12 +114,16 @@ fn get_cgi_headers() -> HashMap<String, String> {
         let header_name = if key.starts_with("HTTP_") {
             // HTTP_X_AUTH_TOKEN -> X-Auth-Token のように変換
             let header_parts: Vec<&str> = key[5..].split('_').collect();
-            let header_name = header_parts.iter()
+            let header_name = header_parts
+                .iter()
                 .map(|part| {
                     let mut chars = part.chars();
                     match chars.next() {
                         None => String::new(),
-                        Some(c) => c.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
+                        Some(c) => {
+                            c.to_ascii_uppercase().to_string()
+                                + &chars.as_str().to_ascii_lowercase()
+                        }
                     }
                 })
                 .collect::<Vec<String>>()
@@ -113,12 +131,16 @@ fn get_cgi_headers() -> HashMap<String, String> {
             header_name
         } else if key == "CONTENT_TYPE" || key == "CONTENT_LENGTH" {
             let header_parts: Vec<&str> = key.split('_').collect();
-            let header_name = header_parts.iter()
+            let header_name = header_parts
+                .iter()
                 .map(|part| {
                     let mut chars = part.chars();
                     match chars.next() {
                         None => String::new(),
-                        Some(c) => c.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
+                        Some(c) => {
+                            c.to_ascii_uppercase().to_string()
+                                + &chars.as_str().to_ascii_lowercase()
+                        }
                     }
                 })
                 .collect::<Vec<String>>()
@@ -128,11 +150,17 @@ fn get_cgi_headers() -> HashMap<String, String> {
             continue;
         };
         // ヘッダー名のバリデーション（英数字とハイフンのみ許可）
-        if !header_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        if !header_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
             continue;
         }
         // ヘッダー値のバリデーション（改行やコントロール文字を含む場合は除外）
-        if value.chars().any(|c| c == '\r' || c == '\n' || (c < ' ' && c != '\t')) {
+        if value
+            .chars()
+            .any(|c| c == '\r' || c == '\n' || (c < ' ' && c != '\t'))
+        {
             continue;
         }
         headers.insert(header_name, value);
@@ -197,8 +225,20 @@ fn from_hex(byte: u8) -> Option<u8> {
 
 /// リクエストボディを標準入力から読み込む
 fn read_request_body() -> Result<Option<Vec<u8>>, Error> {
+    let max_content_length = env::var("RUNBRIDGE_MAX_CONTENT_LENGTH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_CONTENT_LENGTH);
+
     if let Ok(content_length_str) = env::var("CONTENT_LENGTH") {
         if let Ok(content_length) = content_length_str.parse::<usize>() {
+            if content_length > max_content_length {
+                return Err(Error::InvalidRequestBody(format!(
+                    "Request body too large: {} bytes (limit: {} bytes)",
+                    content_length, max_content_length
+                )));
+            }
+
             if content_length > 0 {
                 let mut buffer = vec![0u8; content_length];
                 io::stdin().read_exact(&mut buffer).map_err(|e| {
@@ -208,26 +248,26 @@ fn read_request_body() -> Result<Option<Vec<u8>>, Error> {
             }
         }
     }
-    
+
     Ok(None)
 }
 
 /// リクエストを処理する
 async fn process_request(app: RunBridge, request: Request) -> Result<Response, Error> {
     // ハンドラを検索
-    let handler = app.find_handler(&request.path, &request.method).ok_or_else(|| {
-        Error::RouteNotFound(format!("{} {}", request.method, request.path))
-    })?;
-    
+    let handler = app
+        .find_handler(&request.path, &request.method)
+        .ok_or_else(|| Error::RouteNotFound(format!("{} {}", request.method, request.path)))?;
+
     // ミドルウェアの前処理を適用
     let mut processed_request = request;
     for middleware in app.middlewares() {
         processed_request = middleware.pre_process(processed_request).await?;
     }
-    
+
     // ハンドラでリクエストを処理
     let handler_result = handler.handle(processed_request).await;
-    
+
     // レスポンスの処理
     let mut response = match handler_result {
         Ok(res) => res,
@@ -236,7 +276,7 @@ async fn process_request(app: RunBridge, request: Request) -> Result<Response, E
             return Ok(Response::from_error(&e));
         }
     };
-    
+
     // ミドルウェアの後処理を適用
     for middleware in app.middlewares() {
         match middleware.post_process(response).await {
@@ -247,7 +287,7 @@ async fn process_request(app: RunBridge, request: Request) -> Result<Response, E
             }
         }
     }
-    
+
     Ok(response)
 }
 
@@ -272,24 +312,24 @@ fn write_response(response: Response) -> Result<(), Error> {
         500 => "Internal Server Error",
         _ => "Unknown",
     };
-    
+
     println!("Status: {} {}", response.status, reason_phrase);
-    
+
     // ヘッダーを出力
     for (name, value) in &response.headers {
         println!("{}: {}", name, value);
     }
-    
+
     // 空行を出力してヘッダーとボディを区切る
     println!();
-    
+
     // ボディを出力
     if let Some(body) = response.body {
         io::stdout().write_all(&body).map_err(|e| {
             Error::InternalServerError(format!("Failed to write response body: {}", e))
         })?;
     }
-    
+
     Ok(())
 }
 
@@ -308,12 +348,12 @@ fn log_error_to_file(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_parse_query_string() {
         let query = "name=John&age=30&city=Tokyo";
         let params = parse_query_string(query);
-        
+
         assert_eq!(params.get("name"), Some(&"John".to_string()));
         assert_eq!(params.get("age"), Some(&"30".to_string()));
         assert_eq!(params.get("city"), Some(&"Tokyo".to_string()));
@@ -322,7 +362,8 @@ mod tests {
     #[test]
     fn test_parse_query_string_url_encoding() {
         // URLエンコードされたクエリ文字列
-        let query = "name=%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A&city=Tokyo%20Station&lang=ja%2Den";
+        let query =
+            "name=%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A&city=Tokyo%20Station&lang=ja%2Den";
         let params = parse_query_string(query);
 
         // "あいうえお"（UTF-8でURLエンコード）
@@ -332,25 +373,37 @@ mod tests {
         // ハイフンが%2Dでエンコードされている
         assert_eq!(params.get("lang"), Some(&"ja-en".to_string()));
     }
-    
+
     #[test]
     fn test_get_cgi_headers() {
         // 環境変数を設定 (テスト専用の環境変数を使用すべき)
         use temp_env::with_vars;
-        with_vars([
-            ("HTTP_CONTENT_TYPE", Some("application/json")),
-            ("HTTP_X_CUSTOM_HEADER", Some("test value")),
-            ("HTTP_X_AUTH_TOKEN", Some("secret-token")),
-            ("CONTENT_LENGTH", Some("123")),
-            ("UNRELATED_VAR", Some("should not be included")),
-        ], || {
-            let headers = get_cgi_headers();
-            
-            assert_eq!(headers.get("Content-Type"), Some(&"application/json".to_string()));
-            assert_eq!(headers.get("X-Custom-Header"), Some(&"test value".to_string()));
-            assert_eq!(headers.get("X-Auth-Token"), Some(&"secret-token".to_string()));
-            assert_eq!(headers.get("Content-Length"), Some(&"123".to_string()));
-            assert_eq!(headers.get("UNRELATED_VAR"), None);
-        });
+        with_vars(
+            [
+                ("HTTP_CONTENT_TYPE", Some("application/json")),
+                ("HTTP_X_CUSTOM_HEADER", Some("test value")),
+                ("HTTP_X_AUTH_TOKEN", Some("secret-token")),
+                ("CONTENT_LENGTH", Some("123")),
+                ("UNRELATED_VAR", Some("should not be included")),
+            ],
+            || {
+                let headers = get_cgi_headers();
+
+                assert_eq!(
+                    headers.get("Content-Type"),
+                    Some(&"application/json".to_string())
+                );
+                assert_eq!(
+                    headers.get("X-Custom-Header"),
+                    Some(&"test value".to_string())
+                );
+                assert_eq!(
+                    headers.get("X-Auth-Token"),
+                    Some(&"secret-token".to_string())
+                );
+                assert_eq!(headers.get("Content-Length"), Some(&"123".to_string()));
+                assert_eq!(headers.get("UNRELATED_VAR"), None);
+            },
+        );
     }
-} 
+}

@@ -249,6 +249,7 @@ CGI環境でRunBridgeを利用するには、環境変数が正しく設定さ�
    - `CONTENT_TYPE`: リクエストのContent-Type（POSTリクエスト時）
    - `CONTENT_LENGTH`: リクエストボディの長さ（POSTリクエスト時）
    - `HTTP_*`: その他のHTTPヘッダー
+   - `RUNBRIDGE_MAX_CONTENT_LENGTH`: オプション。リクエストボディの最大バイト数（デフォルト5MB）
 
 2. **Apache設定例 (.htaccess):**
 ```
