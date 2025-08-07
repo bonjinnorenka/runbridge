@@ -2519,6 +2519,7 @@ dependencies = [
  "temp-env",
  "thiserror",
  "tokio",
+ "url",
 ]
 
 [[package]]
