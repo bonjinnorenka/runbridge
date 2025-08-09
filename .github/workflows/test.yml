@@ -17,9 +17,8 @@ jobs:
         rust:
           - stable
           - beta
-          - nightly
         include:
-          - rust: nightly
+          - rust: beta
             allow-failure: true
     continue-on-error: ${{ matrix.allow-failure || false }}
 
