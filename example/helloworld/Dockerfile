@@ -4,7 +4,7 @@ WORKDIR /usr/src/app
 COPY . ./
 # helloworldディレクトリに移動して、そこからビルド
 WORKDIR /usr/src/app/example/helloworld
-RUN cargo build --release
+RUN cargo build --release --features cloud_run --no-default-features
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
