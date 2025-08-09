@@ -11,7 +11,7 @@ use std::fs::OpenOptions;
 use chrono::Local;
 use tokio::task;
 
-use crate::common::{Method, Request, Response};
+use crate::common::{Method, Request, Response, parse_query_string};
 use crate::error::Error;
 use crate::RunBridge;
 
@@ -140,60 +140,6 @@ fn get_cgi_headers() -> HashMap<String, String> {
     headers
 }
 
-/// クエリ文字列をパースする
-fn parse_query_string(query_string: &str) -> HashMap<String, String> {
-    let mut params = HashMap::new();
-
-    if query_string.is_empty() {
-        return params;
-    }
-
-    for pair in query_string.split('&') {
-        let mut parts = pair.splitn(2, '=');
-        if let Some(key) = parts.next() {
-            let value = parts.next().unwrap_or("");
-            // URLデコードを実装
-            let decoded_key = percent_decode(key);
-            let decoded_value = percent_decode(value);
-            params.insert(decoded_key, decoded_value);
-        }
-    }
-
-    params
-}
-
-/// パーセントエンコーディングをデコードする簡易関数
-fn percent_decode(input: &str) -> String {
-    // 標準ライブラリのみで実装
-    let bytes = input.as_bytes();
-    let mut result = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (from_hex(bytes[i + 1]), from_hex(bytes[i + 2])) {
-                result.push(h * 16 + l);
-                i += 3;
-                continue;
-            }
-        } else if bytes[i] == b'+' {
-            result.push(b' ');
-            i += 1;
-            continue;
-        }
-        result.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&result).into_owned()
-}
-
-fn from_hex(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
 
 /// リクエストボディを標準入力から読み込む
 fn read_request_body() -> Result<Option<Vec<u8>>, Error> {

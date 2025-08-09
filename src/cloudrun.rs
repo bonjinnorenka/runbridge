@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use log::{debug, error, info};
-use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer, dev::Service};
+use log::{error, info};
+use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use actix_web::http::header::HeaderMap;
 use actix_web::web::Bytes;
 
-use crate::common::{Method, Request, Response};
+use crate::common::{Method, Request, Response, parse_query_string};
 use crate::error::Error;
 use crate::RunBridge;
 
@@ -45,20 +45,8 @@ async fn convert_request(
     // ヘッダーの変換
     let headers = convert_headers(req.headers());
 
-    // クエリパラメータの取得
-    let query_params = req
-        .query_string()
-        .split('&')
-        .filter(|s| !s.is_empty())
-        .filter_map(|item| {
-            let parts: Vec<&str> = item.splitn(2, '=').collect();
-            if parts.len() == 2 {
-                Some((parts[0].to_string(), parts[1].to_string()))
-            } else {
-                None
-            }
-        })
-        .collect();
+    // クエリパラメータの取得（URLデコード対応）
+    let query_params = parse_query_string(req.query_string());
 
     // リクエストボディの処理
     let body = body.map(|b| b.to_vec());
