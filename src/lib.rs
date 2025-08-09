@@ -7,17 +7,30 @@
 // 対象: "lambda" / "cloud_run" / "cgi"
 
 // 2つ以上のターゲット実行環境featureが同時に有効化された場合（いずれの組み合わせでも）エラー
-#[cfg(all(feature = "lambda", feature = "cloud_run"))]
+// ただし `allow_feature_conflicts` 有効時はテスト利便性のため無視
+#[cfg(all(
+    not(feature = "allow_feature_conflicts"),
+    feature = "lambda",
+    feature = "cloud_run"
+))]
 compile_error!(
     "Conflicting features: 'lambda' and 'cloud_run' cannot be enabled together. Choose exactly one."
 );
 
-#[cfg(all(feature = "lambda", feature = "cgi"))]
+#[cfg(all(
+    not(feature = "allow_feature_conflicts"),
+    feature = "lambda",
+    feature = "cgi"
+))]
 compile_error!(
     "Conflicting features: 'lambda' and 'cgi' cannot be enabled together. Choose exactly one."
 );
 
-#[cfg(all(feature = "cloud_run", feature = "cgi"))]
+#[cfg(all(
+    not(feature = "allow_feature_conflicts"),
+    feature = "cloud_run",
+    feature = "cgi"
+))]
 compile_error!(
     "Conflicting features: 'cloud_run' and 'cgi' cannot be enabled together. Choose exactly one."
 );

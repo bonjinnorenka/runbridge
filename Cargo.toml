@@ -48,6 +48,9 @@ default = []
 lambda = ["lambda_runtime", "aws_lambda_events"]
 cloud_run = ["actix-web", "actix-rt"]
 cgi = ["dep:cgi", "dep:temp-env"]
+## テストで --all-features を使う際に排他チェックを無効化するための緩和用feature
+## 本番ビルドでは有効化しないこと（デフォルト無効）
+allow_feature_conflicts = []
 
 [dev-dependencies]
 mockall = "0.11"
