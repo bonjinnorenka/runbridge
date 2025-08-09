@@ -38,7 +38,7 @@ fn hello_handler(_req: Request) -> Result<HelloResponse, Error> {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
     let app = RunBridge::builder()
         .middleware(AuthMiddleware)
@@ -75,7 +75,7 @@ mod tests {
     use super::*;
     
     #[tokio::test]
-    async fn test_auth_middleware() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_auth_middleware() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // 認証ミドルウェアのテスト
         let middleware = AuthMiddleware;
         
@@ -96,7 +96,7 @@ mod tests {
 }
 
 // メインコードからテストするための関数
-async fn test_middleware() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_middleware() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let middleware = AuthMiddleware;
     
     println!("有効なトークンでテスト");
@@ -141,7 +141,7 @@ async fn test_middleware() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 // テストリクエストを処理するヘルパー関数
-async fn process_test_request(app: &RunBridge, request: Request) -> Result<(), Box<dyn std::error::Error>> {
+async fn process_test_request(app: &RunBridge, request: Request) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let handler = match app.find_handler(&request.path, &request.method) {
         Some(h) => h,
         None => {
