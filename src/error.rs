@@ -13,6 +13,10 @@ pub enum Error {
     #[error("Invalid request body: {0}")]
     InvalidRequestBody(String),
 
+    /// リクエストボディサイズが大きすぎる
+    #[error("Request body too large: {0}")]
+    PayloadTooLarge(String),
+
     /// レスポンスのシリアライズエラー
     #[error("Failed to serialize response: {0}")]
     ResponseSerializationError(String),
@@ -48,6 +52,7 @@ impl Error {
         match self {
             Error::RouteNotFound(_) => 404,
             Error::InvalidRequestBody(_) => 400,
+            Error::PayloadTooLarge(_) => 413,
             Error::ResponseSerializationError(_) => 500,
             Error::MiddlewareError(_) => 500,
             Error::InternalServerError(_) => 500,

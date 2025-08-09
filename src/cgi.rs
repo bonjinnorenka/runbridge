@@ -140,12 +140,32 @@ fn get_cgi_headers() -> HashMap<String, String> {
     headers
 }
 
+/// 最大リクエストボディサイズを取得する
+fn get_max_body_size() -> usize {
+    const DEFAULT_MAX_SIZE: usize = 5 * 1024 * 1024; // 5MB
+    
+    env::var("RUNBRIDGE_MAX_BODY_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_SIZE)
+}
 
 /// リクエストボディを標準入力から読み込む
 fn read_request_body() -> Result<Option<Vec<u8>>, Error> {
     if let Ok(content_length_str) = env::var("CONTENT_LENGTH") {
         if let Ok(content_length) = content_length_str.parse::<usize>() {
             if content_length > 0 {
+                let max_body_size = get_max_body_size();
+                if content_length > max_body_size {
+                    return Err(Error::PayloadTooLarge(
+                        format!(
+                            "Request body size {} bytes exceeds maximum allowed size {} bytes",
+                            content_length,
+                            max_body_size
+                        )
+                    ));
+                }
+                
                 let mut buffer = vec![0u8; content_length];
                 io::stdin().read_exact(&mut buffer).map_err(|e| {
                     Error::InvalidRequestBody(format!("Failed to read request body: {}", e))
@@ -215,6 +235,7 @@ fn write_response(response: Response) -> Result<(), Error> {
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        413 => "Payload Too Large",
         500 => "Internal Server Error",
         _ => "Unknown",
     };
@@ -297,6 +318,45 @@ mod tests {
             assert_eq!(headers.get("X-Auth-Token"), Some(&"secret-token".to_string()));
             assert_eq!(headers.get("Content-Length"), Some(&"123".to_string()));
             assert_eq!(headers.get("UNRELATED_VAR"), None);
+        });
+    }
+    
+    #[test]
+    fn test_get_max_body_size_default() {
+        use temp_env::with_vars;
+        
+        // 環境変数が設定されていない場合はデフォルトの5MBを返す
+        with_vars([
+            ("RUNBRIDGE_MAX_BODY_SIZE", None::<&str>),
+        ], || {
+            let size = get_max_body_size();
+            assert_eq!(size, 5 * 1024 * 1024);
+        });
+    }
+    
+    #[test]
+    fn test_get_max_body_size_custom() {
+        use temp_env::with_vars;
+        
+        // 環境変数で指定されたサイズを返す
+        with_vars([
+            ("RUNBRIDGE_MAX_BODY_SIZE", Some("1048576")), // 1MB
+        ], || {
+            let size = get_max_body_size();
+            assert_eq!(size, 1048576);
+        });
+    }
+    
+    #[test]
+    fn test_get_max_body_size_invalid_env() {
+        use temp_env::with_vars;
+        
+        // 無効な環境変数値の場合はデフォルトにフォールバック
+        with_vars([
+            ("RUNBRIDGE_MAX_BODY_SIZE", Some("invalid")),
+        ], || {
+            let size = get_max_body_size();
+            assert_eq!(size, 5 * 1024 * 1024);
         });
     }
 } 
