@@ -2,6 +2,45 @@
 //!
 //! 単一のコードベースで異なるサーバレス環境に対応するためのライブラリ
 
+// --- Feature validation -----------------------------------------------------
+// 競合するfeatureが同時に有効化されている場合はコンパイルエラーを出す。
+// 対象: "lambda" / "cloud_run" / "cgi"
+
+// 2つ以上のターゲット実行環境featureが同時に有効化された場合（いずれの組み合わせでも）エラー
+#[cfg(all(feature = "lambda", feature = "cloud_run"))]
+compile_error!(
+    "Conflicting features: 'lambda' and 'cloud_run' cannot be enabled together. Choose exactly one."
+);
+
+#[cfg(all(feature = "lambda", feature = "cgi"))]
+compile_error!(
+    "Conflicting features: 'lambda' and 'cgi' cannot be enabled together. Choose exactly one."
+);
+
+#[cfg(all(feature = "cloud_run", feature = "cgi"))]
+compile_error!(
+    "Conflicting features: 'cloud_run' and 'cgi' cannot be enabled together. Choose exactly one."
+);
+
+// どれも選ばれていない場合は警告を出す（ビルドは継続）
+#[cfg(all(
+    not(feature = "lambda"),
+    not(feature = "cloud_run"),
+    not(feature = "cgi")
+))]
+#[deprecated(note = "No target feature enabled. Enable one of: 'lambda', 'cloud_run', or 'cgi'.")]
+pub const _RUNBRIDGE_NO_TARGET_FEATURE_WARNING: () = ();
+
+#[cfg(all(
+    not(feature = "lambda"),
+    not(feature = "cloud_run"),
+    not(feature = "cgi")
+))]
+const _: () = {
+    // 非推奨定数を参照して警告を発生させる（コンパイルは成功）
+    let _ = _RUNBRIDGE_NO_TARGET_FEATURE_WARNING;
+};
+
 pub mod common;
 pub mod error;
 pub mod handler;
