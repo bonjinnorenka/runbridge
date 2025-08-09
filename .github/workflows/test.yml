@@ -114,6 +114,42 @@ jobs:
           cargo build --examples --features cgi
         fi
 
+    - name: Run example shell tests
+      run: |
+        echo "Running example hello world shell tests..."
+        
+        # CGI テスト実行
+        echo "Running CGI integration tests..."
+        if [ -f "example/helloworld/test_cgi.sh" ]; then
+          chmod +x example/helloworld/test_cgi.sh
+          cd example/helloworld
+          ./test_cgi.sh
+          cd ../..
+        fi
+        
+        # Lambda テスト実行（Python3が必要）
+        echo "Running Lambda integration tests..."
+        if [ -f "example/helloworld/test_lambda.sh" ]; then
+          chmod +x example/helloworld/test_lambda.sh
+          cd example/helloworld
+          ./test_lambda.sh
+          cd ../..
+        fi
+
+    - name: Run Cloud Run shell tests
+      run: |
+        # Cloud Run テスト実行（Dockerが必要）
+        echo "Running Cloud Run integration tests..."
+        if [ -f "example/helloworld/test_cloudrun.sh" ]; then
+          # Dockerイメージをビルド
+          docker build -t runbridge-hello-world:test -f example/helloworld/Dockerfile .
+          
+          chmod +x example/helloworld/test_cloudrun.sh
+          cd example/helloworld
+          ./test_cloudrun.sh
+          cd ../..
+        fi
+
   coverage:
     runs-on: ubuntu-latest
     steps:
