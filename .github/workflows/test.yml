@@ -30,18 +30,6 @@ jobs:
       with:
         toolchain: ${{ matrix.rust }}
 
-    - name: Cache cargo dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
-
-
     - name: Build
       run: cargo build --verbose
 
@@ -114,6 +102,25 @@ jobs:
           cargo build --examples --features cgi
         fi
 
+    - name: Clean previous build artifacts
+      run: |
+        echo "前のビルド成果物をクリーンアップします..."
+        for example_dir in example/*; do
+          if [ -d "$example_dir" ] && [ -f "$example_dir/Cargo.toml" ]; then
+            echo "Cleaning example: $(basename $example_dir)"
+            (cd "$example_dir" && cargo clean)
+          fi
+        done
+        # `examples/` 配下に独立クレートがあれば個別クリーン
+        for example_dir in examples/*; do
+          if [ -d "$example_dir" ] && [ -f "$example_dir/Cargo.toml" ]; then
+            echo "Cleaning examples crate: $(basename $example_dir)"
+            (cd "$example_dir" && cargo clean)
+          fi
+        done
+        # ルートで最終的に一括クリーン
+        cargo clean
+
     - name: Run example shell tests
       run: |
         echo "Running example hello world shell tests..."
@@ -160,6 +167,17 @@ jobs:
       with:
         toolchain: stable
         components: llvm-tools-preview
+
+    - name: Rust キャッシュ
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
 
     - name: Install cargo-tarpaulin
       run: cargo install cargo-tarpaulin
