@@ -11,7 +11,7 @@ use std::fs::OpenOptions;
 use chrono::Local;
 use tokio::task;
 
-use crate::common::{Method, Request, Response, parse_query_string};
+use crate::common::{Method, Request, Response, parse_query_string, get_max_body_size};
 use crate::error::Error;
 use crate::RunBridge;
 
@@ -35,8 +35,18 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
     // ヘッダーを取得
     let headers = get_cgi_headers();
     
-    // ボディを読み込む
-    let body = read_request_body()?;
+    // ボディを読み込む（上限超過時はここで413レスポンスを返す）
+    let body = match read_request_body() {
+        Ok(b) => b,
+        Err(Error::PayloadTooLarge(_msg)) => {
+            let res = Response::new(413)
+                .with_header("Content-Type", "text/plain")
+                .with_body("Payload Too Large".as_bytes().to_vec());
+            write_response(res)?;
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
     
     // リクエストを構築
     let mut request = Request::new(method, path.clone());
@@ -140,15 +150,6 @@ fn get_cgi_headers() -> HashMap<String, String> {
     headers
 }
 
-/// 最大リクエストボディサイズを取得する
-fn get_max_body_size() -> usize {
-    const DEFAULT_MAX_SIZE: usize = 5 * 1024 * 1024; // 5MB
-    
-    env::var("RUNBRIDGE_MAX_BODY_SIZE")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_MAX_SIZE)
-}
 
 /// リクエストボディを標準入力から読み込む
 fn read_request_body() -> Result<Option<Vec<u8>>, Error> {
@@ -328,6 +329,7 @@ fn log_error_to_file(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::get_max_body_size;
     
     #[test]
     fn test_parse_query_string() {

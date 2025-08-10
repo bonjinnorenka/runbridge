@@ -13,7 +13,7 @@ pub use http::{StatusCode, Method, Request, Response, ResponseBuilder};
 pub use context::RequestContext;
 pub use traits::{Handler, Middleware};
 pub use cookie::{SameSite, Cookie};
-pub use utils::{percent_decode, parse_query_string};
+pub use utils::{percent_decode, parse_query_string, get_max_body_size};
 
 // CGI関連の公開API
 #[cfg(feature = "cgi")]

@@ -1,17 +1,20 @@
 //! AWS Lambda向けの実装
 
 use std::collections::HashMap;
-use log::{debug, error, info};
+use log::{debug, info, warn, error};
 use lambda_runtime::{run, service_fn, Error as LambdaError, LambdaEvent};
 use aws_lambda_events::event::apigw::{ApiGatewayV2httpRequest, ApiGatewayV2httpResponse};
 use aws_lambda_events::http::header::{HeaderMap, HeaderName, HeaderValue};
 use aws_lambda_events::encodings::Body;
 
-use crate::common::{Method, Request, Response};
+use crate::common::{Method, Request, Response, get_max_body_size};
+use crate::error::Error as AppError;
 use crate::RunBridge;
 
+// 共有の get_max_body_size を使用（common/utils.rs）
+
 /// API Gateway Proxyリクエストから共通のRequestに変換
-fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Request {
+fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Result<Request, AppError> {
     // HTTPメソッドの変換
     let method = match event.request_context.http.method.as_str() {
         "GET" => Method::GET,
@@ -48,14 +51,65 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Request {
         })
         .collect();
 
-    // ボディの変換
-    let body = event.body.map(|body| {
-        if event.is_base64_encoded {
-            base64::decode(body).unwrap_or_default()
-        } else {
-            body.into_bytes()
+    // ボディの変換（境界検査とサイズ上限チェック）
+    let body = match event.body {
+        Some(body_str) => {
+            let max_body_bytes = get_max_body_size();
+            if event.is_base64_encoded {
+                // 入力長から概算のデコード後サイズを見積り（4文字→3バイト、端数切り上げ）
+                let estimated_decoded = ((body_str.len() + 3) / 4).saturating_mul(3);
+                if estimated_decoded > max_body_bytes {
+                    warn!(
+                        "Base64 body too large: estimated {} bytes (limit {})",
+                        estimated_decoded,
+                        max_body_bytes
+                    );
+                    return Err(AppError::PayloadTooLarge(format!(
+                        "Body too large (>{} bytes)",
+                        max_body_bytes
+                    )));
+                }
+
+                match base64::decode(&body_str) {
+                    Ok(bytes) => {
+                        if bytes.len() > max_body_bytes {
+                            warn!(
+                                "Decoded body too large: {} bytes (limit {})",
+                                bytes.len(),
+                                max_body_bytes
+                            );
+                            return Err(AppError::PayloadTooLarge(format!(
+                                "Body too large (>{} bytes)",
+                                max_body_bytes
+                            )));
+                        }
+                        Some(bytes)
+                    }
+                    Err(e) => {
+                        warn!("Base64 decode error: {}", e);
+                        return Err(AppError::InvalidRequestBody(
+                            "Invalid base64-encoded request body".to_string(),
+                        ));
+                    }
+                }
+            } else {
+                // 非Base64ボディのサイズ検査
+                if body_str.len() > max_body_bytes {
+                    warn!(
+                        "Body too large: {} bytes (limit {})",
+                        body_str.len(),
+                        max_body_bytes
+                    );
+                    return Err(AppError::PayloadTooLarge(format!(
+                        "Body too large (>{} bytes)",
+                        max_body_bytes
+                    )));
+                }
+                Some(body_str.into_bytes())
+            }
         }
-    });
+        None => None,
+    };
 
     // Requestオブジェクトの構築
     let mut request = Request::new(method, path);
@@ -68,7 +122,7 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Request {
         request.query_params.insert(format!("path_{}", key), value.to_string());
     }
 
-    request
+    Ok(request)
 }
 
 /// 共通のResponseからAPI Gateway Proxyレスポンスに変換
@@ -122,7 +176,14 @@ async fn lambda_handler(
     let (event, _context) = event.into_parts();
     
     // リクエストの変換
-    let req = convert_apigw_request(event);
+    let req = match convert_apigw_request(event) {
+        Ok(req) => req,
+        Err(e) => {
+            error!("Request conversion error: {}", e);
+            let error_response = Response::from_error(&e);
+            return Ok(convert_to_apigw_response(error_response));
+        }
+    };
     info!("Received request: {} {}", req.method, req.path);
 
     // ハンドラーの検索

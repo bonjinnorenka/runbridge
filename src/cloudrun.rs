@@ -2,13 +2,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use log::{error, info};
+use log::{error, info, warn};
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use actix_web::http::header::HeaderMap;
 use actix_web::web::Bytes;
 
-use crate::common::{Method, Request, Response, parse_query_string};
-use crate::error::Error;
+use crate::common::{Method, Request, Response, parse_query_string, get_max_body_size};
 use crate::RunBridge;
 
 /// actix-webのHeaderMapから共通形式のヘッダーに変換
@@ -95,23 +94,23 @@ async fn handle_request(
     let method_str = req.method().as_str();
     info!("Received request: {} {}", method_str, path);
 
+    // ボディサイズ上限チェック（共通設定）
+    if let Some(ref b) = body {
+        let max = get_max_body_size();
+        if b.len() > max {
+            warn!("Request body too large: {} bytes (limit {})", b.len(), max);
+            return HttpResponse::PayloadTooLarge().finish();
+        }
+    }
+
     // リクエストの変換
     let request = convert_request(&req, path.clone(), body).await;
-    
-    // メソッドの変換
-    let method = match Method::from_str(method_str) {
-        Some(m) => m,
-        None => {
-            error!("Unsupported HTTP method: {}", method_str);
-            return HttpResponse::MethodNotAllowed().finish();
-        }
-    };
 
     // ハンドラーの検索
-    let handler = match app.find_handler(&path, &method) {
+    let handler = match app.find_handler(&path, &request.method) {
         Some(handler) => handler,
         None => {
-            error!("Route not found: {} {}", method, path);
+            error!("Route not found: {} {}", request.method, path);
             return convert_to_http_response(Response::not_found()
                 .with_body("Not Found".as_bytes().to_vec()));
         }
@@ -165,6 +164,7 @@ pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Re
     
     // アプリケーションをArcで包んでスレッド間で共有可能にする
     let app_data = Arc::new(app);
+    let max_body = get_max_body_size();
     
     // HTTPサーバーの構築と起動
     HttpServer::new(move || {
@@ -172,6 +172,8 @@ pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Re
         
         App::new()
             .app_data(app_data.clone())
+            // リクエストボディサイズの上限（共通設定）
+            .app_data(web::PayloadConfig::new(max_body))
             // すべてのリクエストをキャッチする汎用ハンドラー
             .route("/{path:.*}", web::get().to(|req, app: web::Data<Arc<RunBridge>>| 
                 handle_request(req, None, app)))

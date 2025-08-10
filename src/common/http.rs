@@ -299,6 +299,7 @@ impl Response {
             401 => "Unauthorized",
             403 => "Forbidden",
             404 => "Not Found",
+            413 => "Payload Too Large",
             500 | 502 => "Internal Server Error",
             _ => "Error",
         };
@@ -451,6 +452,15 @@ mod tests {
         assert_eq!(res.status, 200);
         assert_eq!(res.headers.get("Content-Type"), Some(&"text/plain".to_string()));
         assert_eq!(res.body.as_ref().unwrap(), &b"Hello, world!".to_vec());
+    }
+
+    #[test]
+    fn test_from_error_payload_too_large() {
+        let err = Error::PayloadTooLarge("exceeds".to_string());
+        let res = Response::from_error(&err);
+        assert_eq!(res.status, 413);
+        let body = String::from_utf8(res.body.unwrap()).unwrap();
+        assert_eq!(body, "Payload Too Large");
     }
 
     #[derive(Serialize, Deserialize, PartialEq, Debug)]

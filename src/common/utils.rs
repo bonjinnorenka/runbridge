@@ -1,6 +1,7 @@
-//! URLエンコーディング関連のユーティリティ関数
+//! 共通ユーティリティ関数群（URLデコード、クエリ解析、環境設定 等）
 
 use std::collections::HashMap;
+use std::env;
 
 /// URLエンコーディングのデコード関数
 pub fn percent_decode(input: &str) -> String {
@@ -54,6 +55,16 @@ pub fn parse_query_string(query_string: &str) -> HashMap<String, String> {
     }
 
     params
+}
+
+/// リクエストボディの最大サイズ（バイト）を取得する
+/// 優先順位: 環境変数 `RUNBRIDGE_MAX_BODY_SIZE` -> デフォルト 5MB
+pub fn get_max_body_size() -> usize {
+    const DEFAULT_MAX_SIZE: usize = 5 * 1024 * 1024; // 5MB
+    env::var("RUNBRIDGE_MAX_BODY_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_SIZE)
 }
 
 #[cfg(test)]
