@@ -44,6 +44,14 @@ pub enum Error {
     /// 認可エラー
     #[error("Authorization error: {0}")]
     AuthorizationError(String),
+
+    /// 無効なHTTPヘッダー
+    #[error("Invalid header: {0}")]
+    InvalidHeader(String),
+
+    /// 無効なCookie
+    #[error("Invalid cookie: {0}")]
+    InvalidCookie(String),
 }
 
 impl Error {
@@ -60,6 +68,8 @@ impl Error {
             Error::ExternalServiceError(_) => 502,
             Error::AuthenticationError(_) => 401,
             Error::AuthorizationError(_) => 403,
+            Error::InvalidHeader(_) => 400,
+            Error::InvalidCookie(_) => 400,
         }
     }
-} 
+}

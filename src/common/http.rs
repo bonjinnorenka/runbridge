@@ -5,6 +5,7 @@ use std::fmt;
 use serde::{Serialize, Deserialize};
 use crate::error::Error;
 use super::context::RequestContext;
+use super::utils::is_header_value_valid;
 
 /// HTTPステータスコード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,10 +165,16 @@ impl Request {
     /// ヘッダーを追加（Requestではキーを小文字に正規化）
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let k = key.into();
+        let v = value.into();
+        // 値の安全性チェック（CRLF/制御文字を拒否）
+        if !is_header_value_valid(&v) {
+            log::warn!("Request::with_header rejected invalid value for '{}': {:?}", k, v);
+            return self;
+        }
         // リクエスト側のヘッダーキーは大小無視のため小文字化して格納
         // Responseはこの型を使わないため影響なし
         let normalized_key = k.to_ascii_lowercase();
-        self.headers.insert(normalized_key, value.into());
+        self.headers.insert(normalized_key, v);
         self
     }
 
@@ -252,7 +259,13 @@ impl Response {
 
     /// ヘッダーを追加
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.insert(key.into(), value.into());
+        let k = key.into();
+        let v = value.into();
+        if !is_header_value_valid(&v) {
+            log::warn!("Response::with_header rejected invalid value for '{}': {:?}", k, v);
+            return self;
+        }
+        self.headers.insert(k, v);
         self
     }
 
@@ -368,7 +381,13 @@ impl ResponseBuilder {
 
     /// ヘッダーを追加
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.insert(key.into(), value.into());
+        let k = key.into();
+        let v = value.into();
+        if !is_header_value_valid(&v) {
+            log::warn!("ResponseBuilder::header rejected invalid value for '{}': {:?}", k, v);
+            return self;
+        }
+        self.headers.insert(k, v);
         self
     }
 
@@ -474,6 +493,30 @@ mod tests {
         assert_eq!(res.status, 200);
         assert_eq!(res.headers.get("Content-Type"), Some(&"text/plain".to_string()));
         assert_eq!(res.body.as_ref().unwrap(), &b"Hello, world!".to_vec());
+    }
+
+    #[test]
+    fn test_header_value_validation_rejects_crlf() {
+        let req = Request::new(Method::GET, "/".to_string())
+            .with_header("X-Test", "ok-value")
+            .with_header("X-Bad", "bad\r\ninjected: 1");
+        // 正常な方は入る、小文字キー
+        assert_eq!(req.headers.get("x-test"), Some(&"ok-value".to_string()));
+        // 不正な方は拒否（未設定）
+        assert!(req.headers.get("x-bad").is_none());
+
+        let res = Response::ok()
+            .with_header("X-Good", "value")
+            .with_header("X-Evil", "evil\nvalue");
+        assert_eq!(res.headers.get("X-Good"), Some(&"value".to_string()));
+        assert!(res.headers.get("X-Evil").is_none());
+
+        let built = ResponseBuilder::new(200)
+            .header("A", "v1")
+            .header("B", "bad\rvalue")
+            .build();
+        assert_eq!(built.headers.get("A"), Some(&"v1".to_string()));
+        assert!(built.headers.get("B").is_none());
     }
 
     #[test]

@@ -3,6 +3,8 @@
 use std::fmt;
 use std::time::Duration;
 use chrono::{DateTime, Utc};
+use crate::error::Error;
+use super::utils::{validate_cookie_name_value, is_header_value_valid};
 
 /// SameSite属性
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,11 +39,37 @@ pub struct Cookie {
 }
 
 impl Cookie {
-    /// 新しいクッキーを作成
+    /// 新しいクッキーを作成（無効な文字は拒否）
     pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            value: value.into(),
+        // 互換API: 無効な値はパニックせずログに出してデフォルト無害値に置換
+        // より厳密な扱いが必要な場合は `try_new` を使用
+        match Self::try_new(name, value) {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("Cookie::new received invalid name/value: {}. Replaced with safe defaults", e);
+                Self {
+                    name: "invalid".to_string(),
+                    value: "".to_string(),
+                    path: None,
+                    domain: None,
+                    expires: None,
+                    max_age: None,
+                    secure: false,
+                    http_only: false,
+                    same_site: None,
+                }
+            }
+        }
+    }
+
+    /// 新しいクッキーをResultで作成（推奨）
+    pub fn try_new(name: impl Into<String>, value: impl Into<String>) -> Result<Self, Error> {
+        let n = name.into();
+        let v = value.into();
+        validate_cookie_name_value(&n, &v)?;
+        Ok(Self {
+            name: n,
+            value: v,
             path: None,
             domain: None,
             expires: None,
@@ -49,7 +77,7 @@ impl Cookie {
             secure: false,
             http_only: false,
             same_site: None,
-        }
+        })
     }
 
     /// パスを設定
@@ -99,11 +127,19 @@ impl Cookie {
         let mut cookie_str = format!("{}={}", self.name, self.value);
 
         if let Some(path) = &self.path {
-            cookie_str.push_str(&format!("; Path={}", path));
+            if is_header_value_valid(path) {
+                cookie_str.push_str(&format!("; Path={}", path));
+            } else {
+                log::warn!("Cookie::to_header_value skipped invalid Path value: {:?}", path);
+            }
         }
 
         if let Some(domain) = &self.domain {
-            cookie_str.push_str(&format!("; Domain={}", domain));
+            if is_header_value_valid(domain) {
+                cookie_str.push_str(&format!("; Domain={}", domain));
+            } else {
+                log::warn!("Cookie::to_header_value skipped invalid Domain value: {:?}", domain);
+            }
         }
 
         if let Some(expires) = &self.expires {
@@ -209,5 +245,34 @@ mod tests {
         assert_eq!(SameSite::Strict.to_string(), "Strict");
         assert_eq!(SameSite::Lax.to_string(), "Lax");
         assert_eq!(SameSite::None.to_string(), "None");
+    }
+
+    #[test]
+    fn test_cookie_try_new_validation() {
+        // 許容
+        let ok = Cookie::try_new("SID", "abcDEF123-_.:~").unwrap();
+        assert_eq!(ok.name, "SID");
+        assert_eq!(ok.value, "abcDEF123-_.:~");
+
+        // 値に禁止記号（; , \n など）
+        assert!(Cookie::try_new("SID", "bad;value").is_err());
+        assert!(Cookie::try_new("SID", "bad,value").is_err());
+        assert!(Cookie::try_new("SID", "bad\nvalue").is_err());
+
+        // 名前に禁止文字（空白・セパレータ）
+        assert!(Cookie::try_new("bad name", "v").is_err());
+        assert!(Cookie::try_new("bad;name", "v").is_err());
+    }
+
+    #[test]
+    fn test_cookie_to_header_skips_invalid_attrs() {
+        let mut c = Cookie::try_new("A", "B").unwrap();
+        // 無効なPath/DomainはCRLF拒否によりスキップされる
+        c.path = Some("/ok".into());
+        c.domain = Some("bad\r\ndomain".into());
+        let hv = c.to_header_value();
+        assert!(hv.contains("A=B"));
+        assert!(hv.contains("Path=/ok"));
+        assert!(!hv.contains("Domain=bad"));
     }
 }

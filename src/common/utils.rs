@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::env;
+use crate::error::Error;
 
 /// URLエンコーディングのデコード関数
 pub fn percent_decode(input: &str) -> String {
@@ -67,6 +68,66 @@ pub fn get_max_body_size() -> usize {
         .unwrap_or(DEFAULT_MAX_SIZE)
 }
 
+/// ヘッダー値に使用可能な文字かを判定（CRLF・制御文字を拒否）
+pub fn is_header_value_valid(value: &str) -> bool {
+    // RFC的にはobs-text等もありうるが、ここでは保守的にUS-ASCII可視範囲に限定し、
+    // 制御文字(0x00-0x1F, 0x7F)およびCR/LFを拒否する
+    if value.is_empty() {
+        return true; // 空は許容（ヘッダー仕様上も可）
+    }
+    value.chars().all(|c| {
+        let code = c as u32;
+        code >= 0x20 && code != 0x7F && c != '\r' && c != '\n'
+    })
+}
+
+/// ヘッダー名が安全なトークンかを簡易判定（使わないが将来拡張用）
+#[allow(dead_code)]
+pub fn is_header_name_valid(name: &str) -> bool {
+    if name.is_empty() { return false; }
+    // token = 1*tchar, tchar = "!#$%&'*+-.^_`|~" or DIGIT or ALPHA
+    name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '!'|'#'|'$'|'%'|'&'|'\''|'*'|'+'|'-'|'.'|'^'|'_'|'`'|'|'|'~'))
+}
+
+/// Cookie名が安全なトークンか（RFC6265準拠の簡易版）
+pub fn is_cookie_name_valid(name: &str) -> bool {
+    if name.is_empty() { return false; }
+    // tokenと同等: 制御/空白とセパレータを除外
+    const FORBIDDEN: &[char] = &['(',')','<','>','@',',',';',':','\\','"','/','[',']','?','{','}',' ','\t','\r','\n'];
+    name.chars().all(|c| c.is_ascii() && !c.is_ascii_control() && !FORBIDDEN.contains(&c))
+}
+
+/// Cookie値が安全か（RFC6265 cookie-octetの簡易版）
+/// 許容: 0x21, 0x23-0x2B, 0x2D-0x3A, 0x3C-0x5B, 0x5D-0x7E
+pub fn is_cookie_value_valid(value: &str) -> bool {
+    value.chars().all(|c| {
+        let b = c as u32;
+        matches!(b,
+            0x21 |
+            0x23..=0x2B |
+            0x2D..=0x3A |
+            0x3C..=0x5B |
+            0x5D..=0x7E
+        )
+    })
+}
+
+/// ヘルパー: 無効なヘッダー値ならErrorを返す
+pub fn validate_header_value(value: &str) -> Result<(), Error> {
+    if is_header_value_valid(value) { Ok(()) } else { Err(Error::InvalidHeader("header value contains control/CRLF or invalid chars".into())) }
+}
+
+/// ヘルパー: 無効なCookie名/値ならErrorを返す
+pub fn validate_cookie_name_value(name: &str, value: &str) -> Result<(), Error> {
+    if !is_cookie_name_valid(name) {
+        return Err(Error::InvalidCookie("cookie name contains invalid characters".into()));
+    }
+    if !is_cookie_value_valid(value) {
+        return Err(Error::InvalidCookie("cookie value contains invalid characters".into()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +163,30 @@ mod tests {
         assert_eq!(percent_decode("normal"), "normal");
         assert_eq!(percent_decode("plus+space"), "plus space"); // +もスペースに変換
         assert_eq!(percent_decode("%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A"), "あいうえお");
+    }
+}
+
+#[cfg(test)]
+mod sec_tests {
+    use super::*;
+
+    #[test]
+    fn header_value_rejects_crlf_and_ctl() {
+        assert!(is_header_value_valid("normal-Value_123"));
+        assert!(!is_header_value_valid("bad\rvalue"));
+        assert!(!is_header_value_valid("bad\nvalue"));
+        assert!(!is_header_value_valid("bad\x07bell"));
+    }
+
+    #[test]
+    fn cookie_name_and_value_validation() {
+        assert!(is_cookie_name_valid("SESSIONID"));
+        assert!(!is_cookie_name_valid("bad name"));
+        assert!(!is_cookie_name_valid("bad;name"));
+
+        assert!(is_cookie_value_valid("abcDEF123-_.:~"));
+        assert!(!is_cookie_value_valid("bad;value"));
+        assert!(!is_cookie_value_valid("bad,value"));
+        assert!(!is_cookie_value_valid("bad\nvalue"));
     }
 }
