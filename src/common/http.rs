@@ -161,9 +161,13 @@ impl Request {
         self
     }
 
-    /// ヘッダーを追加
+    /// ヘッダーを追加（Requestではキーを小文字に正規化）
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.headers.insert(key.into(), value.into());
+        let k = key.into();
+        // リクエスト側のヘッダーキーは大小無視のため小文字化して格納
+        // Responseはこの型を使わないため影響なし
+        let normalized_key = k.to_ascii_lowercase();
+        self.headers.insert(normalized_key, value.into());
         self
     }
 
@@ -456,7 +460,8 @@ mod tests {
         assert_eq!(req.path, "/test");
         assert_eq!(req.query_params.get("key1"), Some(&"value1".to_string()));
         assert_eq!(req.query_params.get("key2"), Some(&"value2".to_string()));
-        assert_eq!(req.headers.get("Content-Type"), Some(&"application/json".to_string()));
+        // Requestヘッダーは小文字キーで保持される
+        assert_eq!(req.headers.get("content-type"), Some(&"application/json".to_string()));
         assert_eq!(req.body.as_ref().unwrap(), &b"test body".to_vec());
     }
 

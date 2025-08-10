@@ -59,8 +59,9 @@ fn test_cgi_echo_endpoint_get() {
     assert!(stdout.contains("\"path\":\"/echo\""));
     assert!(stdout.contains("\"name\":\"test\""));
     assert!(stdout.contains("\"value\":\"123\""));
-    assert!(stdout.contains("\"Content-Type\":\"application/json\""));
-    assert!(stdout.contains("\"X-Custom-Header\":\"TestValue\""));
+    // 取込み時にヘッダーキーは小文字化される
+    assert!(stdout.contains("\"content-type\":\"application/json\""));
+    assert!(stdout.contains("\"x-custom-header\":\"TestValue\""));
 }
 
 #[test]

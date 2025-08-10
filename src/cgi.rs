@@ -51,7 +51,11 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
     // リクエストを構築
     let mut request = Request::new(method, path.clone());
     request.query_params = query_params;
-    request.headers = headers;
+    // Request取り込み時にヘッダーキーを小文字へ正規化
+    request.headers = headers
+        .into_iter()
+        .map(|(k, v)| (k.to_ascii_lowercase(), v))
+        .collect();
     request.body = body;
     
     // リクエストを処理
@@ -240,8 +244,8 @@ fn is_valid_header_value(value: &str) -> bool {
         .all(|&c| c == b'\t' || c == b' ' || (0x21..=0x7e).contains(&c))
 }
 
-/// レスポンスを標準出力に書き出す
-fn write_response(mut response: Response) -> Result<(), Error> {
+/// レスポンスを任意のライターへ書き出す（テスト容易化のため公開しない）
+fn write_response_to<W: Write>(mut response: Response, out: &mut W) -> Result<(), Error> {
     // 出力前に全ヘッダーを検証し、予約ヘッダーを除外する
     let mut sanitized_headers: Vec<(String, String)> = Vec::new();
 
@@ -280,7 +284,6 @@ fn write_response(mut response: Response) -> Result<(), Error> {
         _ => "Unknown",
     };
 
-    let mut out = io::stdout().lock();
     // ステータス行（CRLF）
     out.write_all(format!("Status: {} {}\r\n", response.status, reason_phrase).as_bytes())
         .map_err(|e| Error::InternalServerError(format!("Failed to write status line: {}", e)))?;
@@ -337,12 +340,15 @@ fn write_response(mut response: Response) -> Result<(), Error> {
         })?;
     }
 
-    // バッファをflushして確実に出力
-    out.flush().map_err(|e| {
-        Error::InternalServerError(format!("Failed to flush stdout: {}", e))
-    })?;
-
     Ok(())
+}
+
+/// レスポンスを標準出力に書き出す
+fn write_response(response: Response) -> Result<(), Error> {
+    let mut out = io::stdout().lock();
+    let res = write_response_to(response, &mut out);
+    out.flush().map_err(|e| Error::InternalServerError(format!("Failed to flush stdout: {}", e)))?;
+    res
 }
 
 /// 連結された Set-Cookie ヘッダー値を安全に分割する
@@ -426,7 +432,7 @@ fn split_set_cookie_header(value: &str) -> Vec<String> {
 
 /// エラー内容をログファイルに追記する
 fn log_error_to_file(message: &str) {
-    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S");
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
@@ -574,5 +580,39 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert!(parts[0].contains("Expires=Tue, 31 Dec 2024 23:59:59 GMT"));
         assert!(parts[1].starts_with("b=2"));
+    }
+
+    #[test]
+    fn test_write_response_multiple_set_cookie_lines() {
+        // HashMapの制約によりアプリ側は1キーのみだが、
+        // CGI出力側でカンマ連結を分割して複数行で出すことを確認
+        let response = Response::new(200)
+            .with_header(
+                "Set-Cookie",
+                "a=1; Path=/, b=2; Path=/; Secure, c=3; Expires=Tue, 31 Dec 2024 23:59:59 GMT; Path=/"
+            )
+            .with_header("Content-Type", "text/plain")
+            .with_body(b"ok".to_vec());
+
+        let mut buf: Vec<u8> = Vec::new();
+        write_response_to(response, &mut buf).expect("write_response_to failed");
+        let out = String::from_utf8(buf).expect("utf8");
+
+        // ステータス行
+        assert!(out.contains("Status: 200 OK"));
+
+        // Set-Cookie が3行に分割されて出力されること
+        let set_cookie_lines: Vec<&str> = out
+            .lines()
+            .filter(|l| l.starts_with("Set-Cookie:"))
+            .collect();
+        assert_eq!(set_cookie_lines.len(), 3, "expected 3 Set-Cookie lines, got: {}\n{}", set_cookie_lines.len(), out);
+        assert!(out.contains("Set-Cookie: a=1; Path=/"));
+        assert!(out.contains("Set-Cookie: b=2; Path=/; Secure"));
+        assert!(out.contains("Set-Cookie: c=3; Expires=Tue, 31 Dec 2024 23:59:59 GMT; Path=/"));
+
+        // Content-Length と区切り、ボディ
+        assert!(out.contains("Content-Length: 2\r"));
+        assert!(out.ends_with("\r\nok"));
     }
 }

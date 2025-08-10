@@ -44,7 +44,8 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Result<Request, AppE
     let headers: HashMap<String, String> = event.headers.iter()
         .filter_map(|(k, v)| {
             if let Ok(v_str) = v.to_str() {
-                Some((k.to_string(), v_str.to_string()))
+                // Request取り込み時は小文字キーに正規化
+                Some((k.as_str().to_ascii_lowercase(), v_str.to_string()))
             } else {
                 None
             }

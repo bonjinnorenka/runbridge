@@ -15,6 +15,20 @@ use std::time::{Duration, Instant};
 use crate::common::{Handler, Method, Request, Response};
 use crate::error::Error;
 
+/// Content-Typeの許容範囲を判定（拡張しやすい実装）
+fn is_json_like_content_type(ct: &str) -> bool {
+    let main_type = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    // 明示リスト（将来拡張しやすい）
+    const EXTRA_ALLOWED: &[&str] = &[
+        // RFC 7464 JSON Text Sequences（ボディ仕様は異なるが、将来的拡張を想定）
+        "application/json-seq",
+    ];
+
+    main_type == "application/json"
+        || main_type.ends_with("+json")
+        || EXTRA_ALLOWED.contains(&main_type.as_str())
+}
+
 /// パターンの安全性を確保（アンカーの確認と追加）
 fn ensure_safe_pattern(pattern: &str) -> Result<String, Error> {
     // 空のパターンや特殊ケースのハンドリング - エラーとして弾く
@@ -91,7 +105,11 @@ where
         // パターンの安全性チェック
         let safe_pattern = ensure_safe_pattern(&pattern)?;
         
+        // 開発時はinfo、本番相当ではdebugに落とす
+        #[cfg(debug_assertions)]
         info!("Registering handler for {} with pattern: {}", method, safe_pattern);
+        #[cfg(not(debug_assertions))]
+        debug!("Registering handler for {} with pattern: {}", method, safe_pattern);
         Ok(Self {
             method,
             path_pattern: safe_pattern,
@@ -150,7 +168,11 @@ where
         // パターンの安全性チェック
         let safe_pattern = ensure_safe_pattern(&pattern)?;
         
+        // 開発時はinfo、本番相当ではdebugに落とす
+        #[cfg(debug_assertions)]
         info!("Registering async handler for {} with pattern: {}", method, safe_pattern);
+        #[cfg(not(debug_assertions))]
+        debug!("Registering async handler for {} with pattern: {}", method, safe_pattern);
         Ok(Self {
             method,
             path_pattern: safe_pattern,
@@ -231,8 +253,26 @@ where
     }
 
     async fn handle(&self, req: Request) -> Result<Response, Error> {
-        // リクエストボディをJSONとしてパース（存在する場合）
-        let body_data = if req.body.is_some() {
+        // リクエストボディが長さ>0のときのみContent-Type検証とJSONパースを行う
+        let has_non_empty_body = req.body.as_ref().map(|b| !b.is_empty()).unwrap_or(false);
+        let body_data = if has_non_empty_body {
+            // 取込み時にヘッダーは小文字化されている前提
+            let content_type = req.headers.get("content-type").cloned();
+
+            let ct = content_type.ok_or_else(|| {
+                warn!("Request with body missing Content-Type header");
+                Error::InvalidRequestBody("Missing Content-Type header".to_string())
+            })?;
+
+            // 許容範囲の判定（application/json, *+json, リスト拡張）
+            if !is_json_like_content_type(&ct) {
+                warn!("Unsupported Content-Type for JSON parsing: {}", ct);
+                return Err(Error::InvalidRequestBody(format!(
+                    "Unsupported Content-Type: {} (expected application/json or *+json)",
+                    ct
+                )));
+            }
+
             Some(req.json::<T>()?)
         } else {
             None
@@ -306,8 +346,26 @@ where
     }
 
     async fn handle(&self, req: Request) -> Result<Response, Error> {
-        // リクエストボディをJSONとしてパース（存在する場合）
-        let body_data = if req.body.is_some() {
+        // リクエストボディが長さ>0のときのみContent-Type検証とJSONパースを行う
+        let has_non_empty_body = req.body.as_ref().map(|b| !b.is_empty()).unwrap_or(false);
+        let body_data = if has_non_empty_body {
+            // 取込み時にヘッダーは小文字化されている前提
+            let content_type = req.headers.get("content-type").cloned();
+
+            let ct = content_type.ok_or_else(|| {
+                warn!("Request with body missing Content-Type header");
+                Error::InvalidRequestBody("Missing Content-Type header".to_string())
+            })?;
+
+            // 許容範囲の判定（application/json, *+json, リスト拡張）
+            if !is_json_like_content_type(&ct) {
+                warn!("Unsupported Content-Type for JSON parsing: {}", ct);
+                return Err(Error::InvalidRequestBody(format!(
+                    "Unsupported Content-Type: {} (expected application/json or *+json)",
+                    ct
+                )));
+            }
+
             Some(req.json::<T>()?)
         } else {
             None
@@ -605,6 +663,7 @@ mod tests {
         
         let json_body = serde_json::to_vec(&test_data).unwrap();
         let req = Request::new(Method::POST, "/users".to_string())
+            .with_header("Content-Type", "application/json; charset=utf-8")
             .with_body(json_body);
         
         let result = handler.handle(req).await.unwrap();
@@ -691,6 +750,7 @@ mod tests {
         
         let json_body = serde_json::to_vec(&test_data).unwrap();
         let req = Request::new(Method::POST, "/users".to_string())
+            .with_header("Content-Type", "application/json")
             .with_body(json_body);
         
         let result = handler.handle(req).await.unwrap();
@@ -873,5 +933,97 @@ mod tests {
         
         let result = try_async_get("", test_async_get_handler);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_content_type_accept_plus_json() {
+        // POSTハンドラー
+        let handler = post("/plus-json", test_post_handler);
+
+        // JSONボディと `application/ld+json; charset=utf-8` を付与
+        let body = serde_json::to_vec(&TestRequest { name: "john".into(), value: 7 }).unwrap();
+        let req = Request::new(Method::POST, "/plus-json".to_string())
+            .with_header("Content-Type", "application/ld+json; charset=utf-8")
+            .with_body(body);
+
+        let res = handler.handle(req).await.expect("handler should accept +json");
+        assert_eq!(res.status, 200);
+    }
+
+    #[tokio::test]
+    async fn test_content_type_accept_json_seq() {
+        // application/json-seq も許容リストに含める
+        let handler = post("/json-seq", test_post_handler);
+
+        let body = serde_json::to_vec(&TestRequest { name: "seq".into(), value: 3 }).unwrap();
+        let req = Request::new(Method::POST, "/json-seq".to_string())
+            .with_header("Content-Type", "application/json-seq")
+            .with_body(body);
+
+        let res = handler.handle(req).await.expect("handler should accept application/json-seq");
+        assert_eq!(res.status, 200);
+    }
+
+    #[tokio::test]
+    async fn test_content_type_reject_non_json() {
+        // POSTハンドラー
+        let handler = post("/reject", test_post_handler);
+
+        // JSONボディだが `text/plain` は非許容
+        let body = serde_json::to_vec(&TestRequest { name: "doe".into(), value: 1 }).unwrap();
+        let req = Request::new(Method::POST, "/reject".to_string())
+            .with_header("Content-Type", "text/plain")
+            .with_body(body);
+
+        let err = handler.handle(req).await.expect_err("handler should reject non-json content-type");
+        match err {
+            Error::InvalidRequestBody(msg) => {
+                assert!(msg.contains("Unsupported Content-Type: text/plain"));
+                assert!(msg.contains("expected application/json or *+json"));
+            }
+            e => panic!("unexpected error variant: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_content_type_header_case_insensitive() {
+        // POSTハンドラー
+        let handler = post("/case-insensitive", test_post_handler);
+
+        // ヘッダー名を小文字で指定
+        let body = serde_json::to_vec(&TestRequest { name: "case".into(), value: 2 }).unwrap();
+        let req = Request::new(Method::POST, "/case-insensitive".to_string())
+            .with_header("content-type", "application/json; charset=utf-8")
+            .with_body(body);
+
+        let res = handler.handle(req).await.expect("header lookup should be case-insensitive");
+        assert_eq!(res.status, 200);
+    }
+
+    #[tokio::test]
+    async fn test_empty_body_skips_validation_for_get() {
+        // GETハンドラー（T=()）: 空ボディ（長さ0）ならパースも検証もスキップ
+        let handler = get("/empty", test_get_handler);
+        let req = Request::new(Method::GET, "/empty".to_string())
+            .with_header("Content-Type", "text/plain") // 本来非対応だが空ボディなら影響しない
+            .with_body(Vec::new()); // 空ボディ
+
+        let res = handler.handle(req).await.expect("empty body should be ignored for GET");
+        assert_eq!(res.status, 200);
+    }
+
+    #[tokio::test]
+    async fn test_empty_body_treated_as_missing_for_post() {
+        // POSTハンドラー: 空ボディ（長さ0）はMissing request bodyとしてエラー
+        let handler = post("/empty-post", test_post_handler);
+        let req = Request::new(Method::POST, "/empty-post".to_string())
+            .with_header("Content-Type", "application/json")
+            .with_body(Vec::new()); // 空ボディ
+
+        let err = handler.handle(req).await.expect_err("empty body should be treated as missing for POST");
+        match err {
+            Error::InvalidRequestBody(msg) => assert!(msg.contains("Missing request body")),
+            e => panic!("unexpected error variant: {:?}", e),
+        }
     }
 }

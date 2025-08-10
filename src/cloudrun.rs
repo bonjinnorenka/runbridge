@@ -16,7 +16,8 @@ fn convert_headers(headers: &HeaderMap) -> HashMap<String, String> {
     
     for (key, value) in headers.iter() {
         if let Ok(value_str) = value.to_str() {
-            result.insert(key.as_str().to_string(), value_str.to_string());
+            // Request取り込み時は小文字キーに正規化
+            result.insert(key.as_str().to_ascii_lowercase(), value_str.to_string());
         }
     }
     

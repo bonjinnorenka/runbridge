@@ -116,7 +116,8 @@ impl Handler for EchoHandler {
                 response_data.insert("body".to_string(), serde_json::Value::String(body_str.clone()));
                 
                 // コンテントタイプがJSONの場合、JSONとしてパースして中身も展開
-                if req.headers.get("Content-Type").map_or(false, |ct| ct.contains("application/json")) {
+                // Requestヘッダーキーは小文字化されている
+                if req.headers.get("content-type").map_or(false, |ct| ct.contains("application/json")) {
                     if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&body_str) {
                         if let serde_json::Value::Object(map) = json_value {
                             for (key, value) in map {
