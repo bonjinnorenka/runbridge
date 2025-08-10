@@ -2,14 +2,40 @@
 
 use std::marker::PhantomData;
 use std::future::Future;
+use std::sync::OnceLock;
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
-use log::{debug, info};
+use log::{debug, info, warn, error};
 use regex::Regex;
 use futures::future::{self, Ready};
 
+#[cfg(debug_assertions)]
+use std::time::{Duration, Instant};
+
 use crate::common::{Handler, Method, Request, Response};
 use crate::error::Error;
+
+/// パターンの安全性を確保（アンカーの確認と追加）
+fn ensure_safe_pattern(pattern: &str) -> Result<String, Error> {
+    // 空のパターンや特殊ケースのハンドリング - エラーとして弾く
+    if pattern.is_empty() {
+        return Err(Error::InvalidRequestBody("Empty regex pattern is not allowed".to_string()));
+    }
+    
+    // アンカーの確認と追加
+    let has_start_anchor = pattern.starts_with('^');
+    let has_end_anchor = pattern.ends_with('$');
+    
+    if !has_start_anchor || !has_end_anchor {
+        let safe_pattern = format!("^{}$", 
+            pattern.trim_start_matches('^').trim_end_matches('$'));
+        warn!("Pattern '{}' lacks proper anchors, converted to '{}' for security", 
+              pattern, safe_pattern);
+        Ok(safe_pattern)
+    } else {
+        Ok(pattern.to_string())
+    }
+}
 
 /// レスポンス変換トレイト
 pub trait ResponseWrapper {
@@ -40,6 +66,8 @@ where
 {
     /// ルートパス（正規表現パターン）
     pub path_pattern: String,
+    /// コンパイル済み正規表現（キャッシュ）
+    pub compiled_regex: OnceLock<Result<Regex, regex::Error>>,
     /// HTTPメソッド
     pub method: Method,
     /// ハンドラー関数
@@ -57,16 +85,30 @@ where
     R: ResponseWrapper + Send + Sync + 'static,
 {
     /// 新しいRouteHandlerを作成
-    pub fn new(method: Method, path_pattern: impl Into<String>, handler_fn: F) -> Self {
+    pub fn try_new(method: Method, path_pattern: impl Into<String>, handler_fn: F) -> Result<Self, Error> {
         let pattern = path_pattern.into();
-        info!("Registering handler for {} with pattern: {}", method, pattern);
-        Self {
+        
+        // パターンの安全性チェック
+        let safe_pattern = ensure_safe_pattern(&pattern)?;
+        
+        info!("Registering handler for {} with pattern: {}", method, safe_pattern);
+        Ok(Self {
             method,
-            path_pattern: pattern,
+            path_pattern: safe_pattern,
+            compiled_regex: OnceLock::new(),
             handler_fn,
             _request_type: PhantomData,
             _response_type: PhantomData,
-        }
+        })
+    }
+    
+    /// 新しいRouteHandlerを作成（従来のAPI、非推奨）
+    #[deprecated(note = "Use try_new instead for better error handling")]
+    pub fn new(method: Method, path_pattern: impl Into<String>, handler_fn: F) -> Self {
+        Self::try_new(method, path_pattern, handler_fn)
+            .unwrap_or_else(|e| {
+                panic!("Failed to create RouteHandler: {}", e);
+            })
     }
 }
 
@@ -80,6 +122,8 @@ where
 {
     /// ルートパス（正規表現パターン）
     pub path_pattern: String,
+    /// コンパイル済み正規表現（キャッシュ）
+    pub compiled_regex: OnceLock<Result<Regex, regex::Error>>,
     /// HTTPメソッド
     pub method: Method,
     /// 非同期ハンドラー関数
@@ -100,17 +144,31 @@ where
     Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
 {
     /// 新しいAsyncRouteHandlerを作成
-    pub fn new(method: Method, path_pattern: impl Into<String>, handler_fn: F) -> Self {
+    pub fn try_new(method: Method, path_pattern: impl Into<String>, handler_fn: F) -> Result<Self, Error> {
         let pattern = path_pattern.into();
-        info!("Registering async handler for {} with pattern: {}", method, pattern);
-        Self {
+        
+        // パターンの安全性チェック
+        let safe_pattern = ensure_safe_pattern(&pattern)?;
+        
+        info!("Registering async handler for {} with pattern: {}", method, safe_pattern);
+        Ok(Self {
             method,
-            path_pattern: pattern,
+            path_pattern: safe_pattern,
+            compiled_regex: OnceLock::new(),
             handler_fn,
             _request_type: PhantomData,
             _response_type: PhantomData,
             _future_type: PhantomData,
-        }
+        })
+    }
+    
+    /// 新しいAsyncRouteHandlerを作成（従来のAPI、非推奨）
+    #[deprecated(note = "Use try_new instead for better error handling")]
+    pub fn new(method: Method, path_pattern: impl Into<String>, handler_fn: F) -> Self {
+        Self::try_new(method, path_pattern, handler_fn)
+            .unwrap_or_else(|e| {
+                panic!("Failed to create AsyncRouteHandler: {}", e);
+            })
     }
 }
 
@@ -126,17 +184,43 @@ where
             return false;
         }
 
-        // 正規表現パターンでパスをマッチング
-        match Regex::new(&self.path_pattern) {
-            Ok(re) => {
-                let is_match = re.is_match(path);
-                debug!("Path matching: {} against pattern {}: {}", path, self.path_pattern, is_match);
-                is_match
+        // コンパイル済み正規表現を取得またはコンパイル
+        let compiled_result = self.compiled_regex.get_or_init(|| {
+            Regex::new(&self.path_pattern)
+        });
+
+        match compiled_result {
+            Ok(regex) => {
+                // デバッグビルド時のみタイムアウト監視
+                #[cfg(debug_assertions)]
+                {
+                    let start_time = Instant::now();
+                    let is_match = regex.is_match(path);
+                    let elapsed = start_time.elapsed();
+                    
+                    // 100msを超えた場合は警告ログを出力
+                    if elapsed > Duration::from_millis(100) {
+                        warn!("Slow regex matching detected: pattern '{}' took {:?} for path '{}'", 
+                              self.path_pattern, elapsed, path);
+                    }
+                    
+                    debug!("Path matching: {} against pattern {}: {} (took {:?})", 
+                           path, self.path_pattern, is_match, elapsed);
+                    is_match
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    let is_match = regex.is_match(path);
+                    debug!("Path matching: {} against pattern {}: {}", 
+                           path, self.path_pattern, is_match);
+                    is_match
+                }
             },
             Err(e) => {
-                debug!("Invalid regex pattern: {} - {}", self.path_pattern, e);
-                // 正規表現が無効な場合、単純な文字列比較を試みる
-                path == self.path_pattern.trim_start_matches('^').trim_end_matches('$')
+                error!("Invalid regex pattern: {} - {}. Pattern will be rejected for security.", 
+                       self.path_pattern, e);
+                // 無効な正規表現の場合はマッチしない（設定ミスを隠蔽しない）
+                false
             }
         }
     }
@@ -157,8 +241,7 @@ where
         // ハンドラー関数を実行
         let result = (self.handler_fn)(req, body_data)?;
 
-        // 結果がResponseの場合はそのまま返し、そうでなければJSONレスポンスに変換
-        // Note: これは実際には動作しないコードで、次のステップで対応します
+        // 結果をResponseに変換
         result.into_response()
     }
 }
@@ -176,17 +259,43 @@ where
             return false;
         }
 
-        // 正規表現パターンでパスをマッチング
-        match Regex::new(&self.path_pattern) {
-            Ok(re) => {
-                let is_match = re.is_match(path);
-                debug!("Path matching: {} against pattern {}: {}", path, self.path_pattern, is_match);
-                is_match
+        // コンパイル済み正規表現を取得またはコンパイル
+        let compiled_result = self.compiled_regex.get_or_init(|| {
+            Regex::new(&self.path_pattern)
+        });
+
+        match compiled_result {
+            Ok(regex) => {
+                // デバッグビルド時のみタイムアウト監視
+                #[cfg(debug_assertions)]
+                {
+                    let start_time = Instant::now();
+                    let is_match = regex.is_match(path);
+                    let elapsed = start_time.elapsed();
+                    
+                    // 100msを超えた場合は警告ログを出力
+                    if elapsed > Duration::from_millis(100) {
+                        warn!("Slow regex matching detected: pattern '{}' took {:?} for path '{}'", 
+                              self.path_pattern, elapsed, path);
+                    }
+                    
+                    debug!("Path matching: {} against pattern {}: {} (took {:?})", 
+                           path, self.path_pattern, is_match, elapsed);
+                    is_match
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    let is_match = regex.is_match(path);
+                    debug!("Path matching: {} against pattern {}: {}", 
+                           path, self.path_pattern, is_match);
+                    is_match
+                }
             },
             Err(e) => {
-                debug!("Invalid regex pattern: {} - {}", self.path_pattern, e);
-                // 正規表現が無効な場合、単純な文字列比較を試みる
-                path == self.path_pattern.trim_start_matches('^').trim_end_matches('$')
+                error!("Invalid regex pattern: {} - {}. Pattern will be rejected for security.", 
+                       self.path_pattern, e);
+                // 無効な正規表現の場合はマッチしない（設定ミスを隠蔽しない）
+                false
             }
         }
     }
@@ -207,8 +316,7 @@ where
         // 非同期ハンドラー関数を実行
         let result = (self.handler_fn)(req, body_data).await?;
 
-        // 結果がResponseの場合はそのまま返し、そうでなければJSONレスポンスに変換
-        // Note: これは実際には動作しないコードで、次のステップで対応します
+        // 結果をResponseに変換
         result.into_response()
     }
 }
@@ -219,7 +327,17 @@ where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     RouteHandler::new(Method::GET, path, move |req, _| handler(req))
+}
+
+/// マクロでHTTPハンドラーを生成するための補助関数（エラーハンドリング付き）
+pub fn try_get<F, R>(path: impl Into<String>, handler: F) -> Result<RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>, Error>
+where
+    F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
+    R: ResponseWrapper + Send + Sync + 'static,
+{
+    RouteHandler::try_new(Method::GET, path, move |req, _| handler(req))
 }
 
 /// 非同期GETハンドラーを作成
@@ -229,7 +347,18 @@ where
     R: ResponseWrapper + Send + Sync + 'static,
     Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     AsyncRouteHandler::new(Method::GET, path, move |req, _| handler(req))
+}
+
+/// 非同期GETハンドラーを作成（エラーハンドリング付き）
+pub fn try_async_get<F, R, Fut>(path: impl Into<String>, handler: F) -> Result<AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>, Error>
+where
+    F: Fn(Request) -> Fut + Send + Sync + 'static,
+    R: ResponseWrapper + Send + Sync + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
+{
+    AsyncRouteHandler::try_new(Method::GET, path, move |req, _| handler(req))
 }
 
 /// POSTハンドラーを作成
@@ -239,6 +368,7 @@ where
     T: DeserializeOwned + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     RouteHandler::new(Method::POST, path, move |req, body_data| {
         if let Some(data) = body_data {
             handler(req, data)
@@ -256,6 +386,7 @@ where
     R: ResponseWrapper + Send + Sync + 'static,
     Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     AsyncRouteHandler::new(Method::POST, path, move |req, body_data| {
         if let Some(data) = body_data {
             future::Either::Right(handler(req, data))
@@ -272,6 +403,7 @@ where
     T: DeserializeOwned + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     RouteHandler::new(Method::PUT, path, move |req, body_data| {
         if let Some(data) = body_data {
             handler(req, data)
@@ -289,6 +421,7 @@ where
     R: ResponseWrapper + Send + Sync + 'static,
     Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     AsyncRouteHandler::new(Method::PUT, path, move |req, body_data| {
         if let Some(data) = body_data {
             future::Either::Right(handler(req, data))
@@ -304,6 +437,7 @@ where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     RouteHandler::new(Method::DELETE, path, move |req, _| handler(req))
 }
 
@@ -314,6 +448,7 @@ where
     R: ResponseWrapper + Send + Sync + 'static,
     Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     AsyncRouteHandler::new(Method::DELETE, path, move |req, _| handler(req))
 }
 
@@ -323,6 +458,7 @@ where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     RouteHandler::new(Method::OPTIONS, path, move |req, _| handler(req))
 }
 
@@ -333,6 +469,7 @@ where
     R: ResponseWrapper + Send + Sync + 'static,
     Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
 {
+    #[allow(deprecated)]
     AsyncRouteHandler::new(Method::OPTIONS, path, move |req, _| handler(req))
 }
 
@@ -340,7 +477,6 @@ where
 mod tests {
     use super::*;
     use serde::{Serialize, Deserialize};
-    use std::sync::Arc;
 
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct TestRequest {
@@ -671,5 +807,71 @@ mod tests {
         
         assert_eq!(response.message, "Async response with custom header");
         assert_eq!(response.value, 456);
+    }
+    
+    #[tokio::test]
+    async fn test_invalid_regex_pattern_fail_closed() {
+        // 無効な正規表現パターンでハンドラーを作成
+        let handler = get(r"^[", test_get_handler); // 無効な正規表現
+        
+        // どんなパスでもマッチしないことを確認（fail-closed）
+        assert!(!handler.matches("/test", &Method::GET));
+        assert!(!handler.matches("[", &Method::GET));
+        assert!(!handler.matches("/anything", &Method::GET));
+        assert!(!handler.matches("", &Method::GET));
+    }
+    
+    #[tokio::test]
+    async fn test_empty_pattern_rejection() {
+        // 空のパターンでtry_newを使った場合のエラーハンドリングをテスト
+        let result = RouteHandler::try_new(Method::GET, "", move |req, _: Option<()>| test_get_handler(req));
+        assert!(result.is_err());
+        
+        let result = AsyncRouteHandler::try_new(Method::GET, "", move |req, _: Option<()>| test_async_get_handler(req));
+        assert!(result.is_err());
+    }
+    
+    #[tokio::test]
+    async fn test_anchor_normalization() {
+        // アンカーなしパターンの正規化テスト
+        let handler = get("/test", test_get_handler); // アンカーなし
+        
+        // 正確なマッチのみ成功することを確認
+        assert!(handler.matches("/test", &Method::GET)); // 直接マッチ
+        assert!(!handler.matches("/test/extra", &Method::GET)); // 部分マッチではない
+        assert!(!handler.matches("/prefix/test", &Method::GET)); // 部分マッチではない
+        assert!(!handler.matches("test", &Method::GET)); // パスが/で始まらない場合
+        
+        // 部分アンカーのケース
+        let handler2 = get("^/partial", test_get_handler);
+        let handler3 = get("/partial$", test_get_handler);
+        
+        // どちらも自動で^...$が追加されることを確認
+        assert!(handler2.matches("/partial", &Method::GET));
+        assert!(!handler2.matches("/partial/extra", &Method::GET));
+        
+        assert!(handler3.matches("/partial", &Method::GET));
+        assert!(!handler3.matches("/prefix/partial", &Method::GET));
+    }
+    
+    #[tokio::test]
+    async fn test_try_new_api() {
+        // try_new APIの動作テスト
+        let result = try_get("/api/test", test_get_handler);
+        assert!(result.is_ok());
+        
+        let handler = result.unwrap();
+        assert!(handler.matches("/api/test", &Method::GET));
+        
+        // 空のパターンはエラー
+        let result = try_get("", test_get_handler);
+        assert!(result.is_err());
+        
+        // 非同期版もテスト
+        let result = try_async_get("/async/test", test_async_get_handler);
+        assert!(result.is_ok());
+        
+        let result = try_async_get("", test_async_get_handler);
+        assert!(result.is_err());
     }
 }
