@@ -127,12 +127,12 @@ fn get_cgi_headers() -> HashMap<String, String> {
         } else {
             continue;
         };
-        // ヘッダー名のバリデーション（英数字とハイフンのみ許可）
-        if !header_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        // ヘッダー名のバリデーション（英数字とハイフンのみ許可、ASCII限定）
+        if !is_valid_header_name(&header_name) {
             continue;
         }
-        // ヘッダー値のバリデーション（改行やコントロール文字を含む場合は除外）
-        if value.chars().any(|c| c == '\r' || c == '\n' || (c < ' ' && c != '\t')) {
+        // ヘッダー値のバリデーション（ASCIIホワイトリスト）
+        if !is_valid_header_value(&value) {
             continue;
         }
         headers.insert(header_name, value);
@@ -217,16 +217,55 @@ async fn process_request(app: RunBridge, request: Request) -> Result<Response, E
     Ok(response)
 }
 
+/// ヘッダー名が安全かどうか検証する（ASCII英数+ハイフンのみ）
+fn is_valid_header_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    if b.is_empty() {
+        return false;
+    }
+    // 許可: A-Z a-z 0-9 '-'
+    if !b.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'-') {
+        return false;
+    }
+    true
+}
+
+/// ヘッダー値が安全かどうか検証する（ASCIIのホワイトリスト）
+/// 許可: HTAB(0x09), SP(0x20), 可視ASCII(0x21–0x7E)
+fn is_valid_header_value(value: &str) -> bool {
+    value
+        .as_bytes()
+        .iter()
+        .all(|&c| c == b'\t' || c == b' ' || (0x21..=0x7e).contains(&c))
+}
+
 /// レスポンスを標準出力に書き出す
-fn write_response(response: Response) -> Result<(), Error> {
-    // デバッグ: レスポンスボディの内容を標準エラー出力に出力
-    if let Some(body) = &response.body {
-        if let Ok(body_str) = String::from_utf8(body.clone()) {
-            eprintln!("Debug - Response body: {}", body_str);
+fn write_response(mut response: Response) -> Result<(), Error> {
+    // 出力前に全ヘッダーを検証し、予約ヘッダーを除外する
+    let mut sanitized_headers: Vec<(String, String)> = Vec::new();
+
+    for (name, value) in &response.headers {
+        // 予約ヘッダーはユーザー指定を無視
+        if name.eq_ignore_ascii_case("Status") || name.eq_ignore_ascii_case("Content-Length") {
+            continue;
         }
+        if !is_valid_header_name(name) || !is_valid_header_value(value) {
+            error!("Invalid header detected - name: '{}', value: '{}'", name, value);
+            log_error_to_file(&format!(
+                "CRLF injection attempt detected in header: '{}': '{}'",
+                name, value
+            ));
+            // 安全な400レスポンスを構築
+            response = Response::new(400)
+                .with_header("Content-Type", "text/plain; charset=utf-8")
+                .with_body(b"Bad Request: Invalid header".to_vec());
+            sanitized_headers.clear();
+            break;
+        }
+        sanitized_headers.push((name.clone(), value.clone()));
     }
 
-    // ステータスコードとReason Phraseを出力
+    // ステータスコードとReason Phraseを準備
     let reason_phrase = match response.status {
         200 => "OK",
         201 => "Created",
@@ -239,24 +278,38 @@ fn write_response(response: Response) -> Result<(), Error> {
         500 => "Internal Server Error",
         _ => "Unknown",
     };
-    
-    println!("Status: {} {}", response.status, reason_phrase);
-    
-    // ヘッダーを出力
-    for (name, value) in &response.headers {
-        println!("{}: {}", name, value);
+
+    let mut out = io::stdout().lock();
+    // ステータス行（CRLF）
+    out.write_all(format!("Status: {} {}\r\n", response.status, reason_phrase).as_bytes())
+        .map_err(|e| Error::InternalServerError(format!("Failed to write status line: {}", e)))?;
+
+    // 最終的なヘッダー集合（予約ヘッダーは除外されたもの）
+    for (name, value) in sanitized_headers {
+        out.write_all(format!("{}: {}\r\n", name, value).as_bytes()).map_err(|e| {
+            Error::InternalServerError(format!("Failed to write header: {}", e))
+        })?;
     }
-    
-    // 空行を出力してヘッダーとボディを区切る
-    println!();
-    
-    // ボディを出力
+
+    // Content-Length をフレームワーク側で付与（ボディがある場合）
+    if let Some(body) = &response.body {
+        out.write_all(format!("Content-Length: {}\r\n", body.len()).as_bytes()).map_err(|e| {
+            Error::InternalServerError(format!("Failed to write Content-Length: {}", e))
+        })?;
+    }
+
+    // ヘッダーとボディの区切り（CRLF）
+    out.write_all(b"\r\n").map_err(|e| {
+        Error::InternalServerError(format!("Failed to write header/body separator: {}", e))
+    })?;
+
+    // ボディ出力
     if let Some(body) = response.body {
-        io::stdout().write_all(&body).map_err(|e| {
+        out.write_all(&body).map_err(|e| {
             Error::InternalServerError(format!("Failed to write response body: {}", e))
         })?;
     }
-    
+
     Ok(())
 }
 
@@ -358,5 +411,38 @@ mod tests {
             let size = get_max_body_size();
             assert_eq!(size, 5 * 1024 * 1024);
         });
+    }
+    
+    #[test]
+    fn test_is_valid_header_name() {
+        // 有効なヘッダー名
+        assert!(is_valid_header_name("Content-Type"));
+        assert!(is_valid_header_name("X-Custom-Header"));
+        assert!(is_valid_header_name("User-Agent"));
+        assert!(is_valid_header_name("Accept"));
+        
+        // 無効なヘッダー名
+        assert!(!is_valid_header_name(""));
+        assert!(!is_valid_header_name("Content\rType"));
+        assert!(!is_valid_header_name("Content\nType"));
+        assert!(!is_valid_header_name("Content Type")); // スペース
+        assert!(!is_valid_header_name("Content:Type")); // コロン
+        assert!(!is_valid_header_name("Content=Type")); // イコール
+    }
+    
+    #[test]
+    fn test_is_valid_header_value() {
+        // 有効なヘッダー値
+        assert!(is_valid_header_value("text/html"));
+        assert!(is_valid_header_value("application/json; charset=utf-8"));
+        assert!(is_valid_header_value("Bearer token123"));
+        assert!(is_valid_header_value("")); // 空文字は有効
+        assert!(is_valid_header_value("value\twith\ttab")); // タブは許可
+        
+        // 無効なヘッダー値（CRLF攻撃）
+        assert!(!is_valid_header_value("text/html\r\nSet-Cookie: malicious"));
+        assert!(!is_valid_header_value("text/html\nX-Evil: attack"));
+        assert!(!is_valid_header_value("text/html\rX-Evil: attack"));
+        assert!(!is_valid_header_value("value\x00with\x01control")); // 制御文字
     }
 } 
