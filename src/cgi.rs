@@ -285,10 +285,36 @@ fn write_response(mut response: Response) -> Result<(), Error> {
     out.write_all(format!("Status: {} {}\r\n", response.status, reason_phrase).as_bytes())
         .map_err(|e| Error::InternalServerError(format!("Failed to write status line: {}", e)))?;
 
-    // 最終的なヘッダー集合（予約ヘッダーは除外されたもの）
+    // Set-Cookie を複数行で正しく出力するために振り分ける
+    let mut normal_headers: Vec<(String, String)> = Vec::new();
+    let mut set_cookie_values: Vec<String> = Vec::new();
+
     for (name, value) in sanitized_headers {
+        if name.eq_ignore_ascii_case("Set-Cookie") {
+            // 複数Cookieが1ヘッダーに連結されていた場合を安全に分割
+            let parts = split_set_cookie_header(&value);
+            if parts.is_empty() {
+                // 分割できない（単一）場合はそのまま扱う
+                set_cookie_values.push(value);
+            } else {
+                set_cookie_values.extend(parts);
+            }
+        } else {
+            normal_headers.push((name, value));
+        }
+    }
+
+    // 通常ヘッダーを出力
+    for (name, value) in normal_headers {
         out.write_all(format!("{}: {}\r\n", name, value).as_bytes()).map_err(|e| {
             Error::InternalServerError(format!("Failed to write header: {}", e))
+        })?;
+    }
+
+    // Set-Cookie を複数行で出力
+    for cookie in set_cookie_values {
+        out.write_all(format!("Set-Cookie: {}\r\n", cookie).as_bytes()).map_err(|e| {
+            Error::InternalServerError(format!("Failed to write Set-Cookie header: {}", e))
         })?;
     }
 
@@ -312,6 +338,85 @@ fn write_response(mut response: Response) -> Result<(), Error> {
     }
 
     Ok(())
+}
+
+/// 連結された Set-Cookie ヘッダー値を安全に分割する
+/// 注意: RFC的にはSet-Cookieは結合不可だが、実装上HashMap制約の回避として
+/// "," 区切りで結合されたケースを考慮し、Expires 属性内のカンマは分割対象から除外する。
+fn split_set_cookie_header(value: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut buf = String::new();
+    let mut in_expires = false;
+    let mut chars = value.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            // セミコロンで属性の区切りを検出（Expires= のスコープ終端にもなる）
+            ';' => {
+                in_expires = false; // Expires= の属性スコープを抜ける
+                buf.push(ch);
+            }
+            // カンマは、Expires= 属性中ならそのまま、それ以外ならCookie間区切りの可能性
+            ',' => {
+                if in_expires {
+                    buf.push(ch);
+                } else {
+                    // 直後の空白をスキップ
+                    while let Some(' ') = chars.peek() {
+                        chars.next();
+                    }
+                    // 次のトークンが cookie-pair らしい（= を含む）なら分割、それ以外は文字として扱う
+                    // 先読みして '=' がセミコロンより前に現れるかを確認
+                    let mut lookahead = String::new();
+                    let mut iter = chars.clone();
+                    let mut seen_eq_before_semicolon = false;
+                    while let Some(&c) = iter.peek() {
+                        if c == ';' || c == ',' { break; }
+                        if c == '=' { seen_eq_before_semicolon = true; break; }
+                        lookahead.push(c);
+                        iter.next();
+                    }
+                    if seen_eq_before_semicolon {
+                        // ここで一旦Cookieを確定
+                        let part = buf.trim();
+                        if !part.is_empty() { result.push(part.to_string()); }
+                        buf.clear();
+                        continue;
+                    } else {
+                        // Cookie間区切りではないので文字として追加
+                        buf.push(',');
+                    }
+                }
+            }
+            // 'E' または 'e' から始まる Expires= を検出してフラグを立てる
+            'E' | 'e' => {
+                // 現在位置から "xpires=" までを確認（ケースインセンシティブ）
+                let mut shadow = chars.clone();
+                let mut matches = true;
+                for expected in ['x','p','i','r','e','s','='] {
+                    if let Some(c) = shadow.next() {
+                        if c.to_ascii_lowercase() != expected { matches = false; break; }
+                    } else { matches = false; break; }
+                }
+                if matches {
+                    in_expires = true;
+                }
+                buf.push(ch);
+            }
+            _ => {
+                buf.push(ch);
+            }
+        }
+    }
+
+    let tail = buf.trim();
+    if !tail.is_empty() {
+        result.push(tail.to_string());
+    }
+
+    // 単一Cookieしか得られなかった場合は、
+    // 呼び出し側でそのまま扱えるように空ベクタではなく単一要素でも返す
+    result
 }
 
 /// エラー内容をログファイルに追記する
@@ -447,4 +552,22 @@ mod tests {
         assert!(!is_valid_header_value("text/html\rX-Evil: attack"));
         assert!(!is_valid_header_value("value\x00with\x01control")); // 制御文字
     }
-} 
+
+    #[test]
+    fn test_split_set_cookie_header_simple_multiple() {
+        let h = "a=1; Path=/, b=2; Path=/; Secure";
+        let parts = split_set_cookie_header(h);
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].starts_with("a=1"));
+        assert!(parts[1].starts_with("b=2"));
+    }
+
+    #[test]
+    fn test_split_set_cookie_header_with_expires() {
+        let h = "a=1; Expires=Tue, 31 Dec 2024 23:59:59 GMT; Path=/, b=2; Path=/";
+        let parts = split_set_cookie_header(h);
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].contains("Expires=Tue, 31 Dec 2024 23:59:59 GMT"));
+        assert!(parts[1].starts_with("b=2"));
+    }
+}
