@@ -125,7 +125,8 @@ impl Method {
 }
 
 /// HTTPリクエスト
-#[derive(Debug, Clone)]
+/// 注意：意図的にCloneトレイトを省略しています（RequestContextの安全性のため）
+#[derive(Debug)]
 pub struct Request {
     /// HTTPメソッド
     pub method: Method,
@@ -196,6 +197,22 @@ impl Request {
     pub fn with_context(mut self, context: RequestContext) -> Self {
         self.context = context;
         self
+    }
+
+    /// コンテキストを除外してリクエストをクローン（安全なデータ複製）
+    /// コンテキストは意図的に新しい空の状態で初期化されます
+    pub fn clone_without_context(&self) -> Self {
+        #[cfg(debug_assertions)]
+        log::debug!("Request::clone_without_context() called - context will be empty");
+        
+        Self {
+            method: self.method,
+            path: self.path.clone(),
+            query_params: self.query_params.clone(),
+            headers: self.headers.clone(),
+            body: self.body.clone(),
+            context: RequestContext::new(),
+        }
     }
 }
 
@@ -665,5 +682,40 @@ mod tests {
         assert_eq!(response.headers.get("Header1"), Some(&"Value1".to_string()));
         assert_eq!(response.headers.get("Header2"), Some(&"Value2".to_string()));
         assert_eq!(response.headers.get("Header3"), Some(&"Value3".to_string()));
+    }
+
+    #[test]
+    fn test_request_clone_without_context() {
+        let mut req = Request::new(Method::POST, "/test".to_string())
+            .with_query_param("key1", "value1")
+            .with_header("Content-Type", "application/json")
+            .with_body(b"test body".to_vec());
+
+        // コンテキストにデータを追加
+        req.context_mut().set("user_id", 123u32);
+        req.context_mut().set("session", "abc123".to_string());
+        
+        // コンテキスト有りの状態を確認
+        assert!(req.context().contains_key("user_id"));
+        assert!(req.context().contains_key("session"));
+
+        // コンテキストなしでクローン
+        let cloned = req.clone_without_context();
+        
+        // 基本データは複製されている
+        assert_eq!(cloned.method, req.method);
+        assert_eq!(cloned.path, req.path);
+        assert_eq!(cloned.query_params, req.query_params);
+        assert_eq!(cloned.headers, req.headers);
+        assert_eq!(cloned.body, req.body);
+        
+        // コンテキストは空になっている
+        assert!(cloned.context().is_empty());
+        assert!(!cloned.context().contains_key("user_id"));
+        assert!(!cloned.context().contains_key("session"));
+        
+        // 元のリクエストのコンテキストは保持されている
+        assert!(req.context().contains_key("user_id"));
+        assert!(req.context().contains_key("session"));
     }
 }

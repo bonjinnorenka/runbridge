@@ -58,9 +58,19 @@ impl RequestContext {
     }
 }
 
-impl Clone for RequestContext {
-    fn clone(&self) -> Self {
-        // Anyトレイトはcloneをサポートしていないため、新しい空のコンテキストを作成
+impl RequestContext {
+    /// 新しい空のコンテキストを作成（明示的なデータクリア）
+    pub fn clone_empty(&self) -> Self {
+        Self::new()
+    }
+
+    /// 可能な場合にディープコピーを試行（Cloneトレイトを実装した型のみ）
+    /// 現在は実際のクローンが不可能なため、空のコンテキストを返却
+    /// 将来的により高度な実装に変更可能性あり
+    pub fn try_clone(&self) -> Self {
+        // Anyトレイトの制約により実際のクローンは実装困難
+        #[cfg(debug_assertions)]
+        log::debug!("RequestContext::try_clone() called - returning empty context due to Any trait limitations");
         Self::new()
     }
 }
@@ -158,5 +168,29 @@ mod tests {
 
         let removed_user: Option<UserInfo> = context.remove("user");
         assert_eq!(removed_user, Some(user));
+    }
+
+    #[test]
+    fn test_request_context_safe_cloning() {
+        let mut context = RequestContext::new();
+        context.set("key1", "value1".to_string());
+        context.set("key2", 42i32);
+
+        // 明示的な空のコンテキスト作成
+        let empty_clone = context.clone_empty();
+        assert!(empty_clone.is_empty());
+        assert!(!empty_clone.contains_key("key1"));
+        assert!(!empty_clone.contains_key("key2"));
+
+        // try_clone も同様に空のコンテキストを返す（現在の実装）
+        let try_clone = context.try_clone();
+        assert!(try_clone.is_empty());
+        assert!(!try_clone.contains_key("key1"));
+        assert!(!try_clone.contains_key("key2"));
+
+        // 元のコンテキストは変更されない
+        assert!(!context.is_empty());
+        assert!(context.contains_key("key1"));
+        assert!(context.contains_key("key2"));
     }
 }
