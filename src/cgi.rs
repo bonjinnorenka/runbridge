@@ -337,6 +337,11 @@ fn write_response(mut response: Response) -> Result<(), Error> {
         })?;
     }
 
+    // バッファをflushして確実に出力
+    out.flush().map_err(|e| {
+        Error::InternalServerError(format!("Failed to flush stdout: {}", e))
+    })?;
+
     Ok(())
 }
 

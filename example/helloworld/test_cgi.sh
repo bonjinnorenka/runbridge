@@ -55,13 +55,18 @@ run_test() {
     output=$("$BINARY_PATH" 2>/dev/null)
     local exit_code=$?
     
-    # レスポンスを解析
-    local status_line=$(echo "$output" | head -1)
-    local headers_end_line=$(echo "$output" | grep -n "^$" | head -1 | cut -d: -f1)
+    # レスポンスを解析（CRLF対応）
+    local status_line=$(echo "$output" | head -1 | tr -d '\r')
+    local headers_end_line=$(echo "$output" | grep -n "^$\|^[[:space:]]*$" | head -1 | cut -d: -f1)
     local body=""
     
     if [ -n "$headers_end_line" ]; then
-        body=$(echo "$output" | tail -n +"$((headers_end_line + 1))")
+        body=$(echo "$output" | tail -n +"$((headers_end_line + 1))" | tr -d '\r')
+        # JSONレスポンスの場合、messageフィールドを抽出
+        if [[ "$body" == \{* ]]; then
+            # JSON形式の場合、messageフィールドの値を抽出
+            body=$(echo "$body" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+        fi
     fi
     
     echo "  リクエスト: $request_method $request_uri?$query_string"
