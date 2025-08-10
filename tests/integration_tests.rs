@@ -70,6 +70,7 @@ mod tests {
         };
         let json_body = serde_json::to_vec(&req_data).unwrap();
         let post_req = Request::new(Method::POST, "/items".to_string())
+            .with_header("Content-Type", "application/json")
             .with_body(json_body);
 
         let handler = app.find_handler(&post_req.path, &post_req.method).expect("Handler not found");
