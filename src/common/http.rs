@@ -241,18 +241,24 @@ pub struct Response {
 impl Response {
     /// 新しいレスポンスを作成
     pub fn new(status: u16) -> Self {
+        let mut headers = HashMap::new();
+        // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
+        inject_default_security_headers(&mut headers);
         Self {
             status,
-            headers: HashMap::new(),
+            headers,
             body: None,
         }
     }
 
     /// StatusCodeから新しいレスポンスを作成
     pub fn with_status(status: StatusCode) -> Self {
+        let mut headers = HashMap::new();
+        // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
+        inject_default_security_headers(&mut headers);
         Self {
             status: status.as_u16(),
-            headers: HashMap::new(),
+            headers,
             body: None,
         }
     }
@@ -354,20 +360,18 @@ pub struct ResponseBuilder {
 impl ResponseBuilder {
     /// 新しいResponseBuilderを作成（u16ステータスコード）
     pub fn new(status: u16) -> Self {
-        Self {
-            status,
-            headers: HashMap::new(),
-            body: None,
-        }
+        let mut headers = HashMap::new();
+        // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
+        inject_default_security_headers(&mut headers);
+        Self { status, headers, body: None }
     }
 
     /// 新しいResponseBuilderを作成（StatusCode）
     pub fn with_status(status: StatusCode) -> Self {
-        Self {
-            status: status.as_u16(),
-            headers: HashMap::new(),
-            body: None,
-        }
+        let mut headers = HashMap::new();
+        // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
+        inject_default_security_headers(&mut headers);
+        Self { status: status.as_u16(), headers, body: None }
     }
 
     /// 既存のResponseからResponseBuilderを作成
@@ -440,13 +444,26 @@ impl ResponseBuilder {
     }
 
     /// Responseを構築
-    pub fn build(self) -> Response {
-        Response {
-            status: self.status,
-            headers: self.headers,
-            body: self.body,
-        }
+    pub fn build(mut self) -> Response {
+        // build時にも不足があればセキュリティヘッダーを補完
+        inject_default_security_headers(&mut self.headers);
+        Response { status: self.status, headers: self.headers, body: self.body }
     }
+}
+
+/// 既定のセキュリティヘッダーを不足時に注入する
+fn inject_default_security_headers(map: &mut HashMap<String, String>) {
+    // ユーザーが上書きしたい場合を尊重し、未設定時のみ入れる
+    map.entry("X-Content-Type-Options".to_string())
+        .or_insert_with(|| "nosniff".to_string());
+    map.entry("X-Frame-Options".to_string())
+        .or_insert_with(|| "DENY".to_string());
+    map.entry("X-XSS-Protection".to_string())
+        .or_insert_with(|| "1; mode=block".to_string());
+    map.entry("Referrer-Policy".to_string())
+        .or_insert_with(|| "strict-origin-when-cross-origin".to_string());
+    map.entry("Content-Security-Policy".to_string())
+        .or_insert_with(|| "default-src 'self'".to_string());
 }
 
 #[cfg(test)]
