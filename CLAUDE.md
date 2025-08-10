@@ -87,7 +87,13 @@ convert_to_http_response(Response) -> HttpResponse
 5. ミドルウェア後処理適用
 6. `Response`からプラットフォーム固有形式に変換
 
-### 5. エラーハンドリング (`src/error.rs`)
+### 5. セキュリティヘッダー (`src/common/http.rs`)
+- **既定セキュリティヘッダー自動注入**: すべてのレスポンス作成時に5つのセキュリティヘッダーを自動設定
+- **非侵入的設計**: 既存のカスタムヘッダーを上書きしない（`or_insert_with()`使用）
+- **OWASP準拠**: X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, CSP
+- **テストファイル**: `tests/security_headers_test.rs` - 削除禁止（セキュリティ回帰防止）
+
+### 6. エラーハンドリング (`src/error.rs`)
 - 統一エラー型でHTTPステータスコードへの自動マッピング
 - プラットフォーム固有のエラー処理を抽象化
 
