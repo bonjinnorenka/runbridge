@@ -10,7 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
+  # 基本テスト（ユニット・インテグレーション）
+  basic-tests:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -30,6 +31,17 @@ jobs:
       with:
         toolchain: ${{ matrix.rust }}
 
+    - name: Rust キャッシュ
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: basic-tests-${{ runner.os }}-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          basic-tests-${{ runner.os }}-${{ matrix.rust }}-
+
     - name: Build
       run: cargo build --verbose
 
@@ -42,17 +54,65 @@ jobs:
     - name: Run CGI integration tests
       run: cargo test --verbose --test cgi_integration_test
 
-    - name: Test with lambda feature
-      run: cargo test --verbose --features lambda
+  # Feature別テスト
+  feature-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        feature: [lambda, cloud_run, cgi, all-features]
+        include:
+          - feature: all-features
+            flag: --all-features
 
-    - name: Test with cloud_run feature
-      run: cargo test --verbose --features cloud_run
+    steps:
+    - uses: actions/checkout@v4
 
-    - name: Test with cgi feature
-      run: cargo test --verbose --features cgi
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
 
-    - name: Test with all features
-      run: cargo test --verbose --all-features
+    - name: Rust キャッシュ
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: feature-tests-${{ runner.os }}-${{ matrix.feature }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          feature-tests-${{ runner.os }}-${{ matrix.feature }}-
+
+    - name: Test with ${{ matrix.feature }} feature
+      run: |
+        if [ "${{ matrix.feature }}" = "all-features" ]; then
+          cargo test --verbose --all-features
+        else
+          cargo test --verbose --features ${{ matrix.feature }}
+        fi
+
+  # ビルド・ドキュメント・Example確認
+  build-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Rust キャッシュ
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: build-tests-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          build-tests-${{ runner.os }}-
 
     - name: Build documentation
       run: cargo doc --no-deps --all-features
@@ -121,6 +181,34 @@ jobs:
         # ルートで最終的に一括クリーン
         cargo clean
 
+  # Shell統合テスト（CGI, Lambda）
+  integration-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Setup Python for Lambda tests
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Rust キャッシュ
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: integration-tests-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          integration-tests-${{ runner.os }}-
+
     - name: Run example shell tests
       run: |
         echo "Running example hello world shell tests..."
@@ -142,6 +230,29 @@ jobs:
           ./test_lambda.sh
           cd ../..
         fi
+
+  # Docker統合テスト（Cloud Run）
+  docker-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Rust キャッシュ
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: docker-tests-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          docker-tests-${{ runner.os }}-
 
     - name: Run Cloud Run shell tests
       run: |
