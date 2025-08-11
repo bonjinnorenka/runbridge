@@ -191,6 +191,43 @@ run_test \
     "Not Found" \
     "404"
 
+# テストケース10: gzip圧縮JSONボディのPOST（ライブラリが展開し200を期待）
+echo -e "${YELLOW}テスト実行中: gzip圧縮JSONのPOST（200期待）${NC}"
+TOTAL_TESTS=$((TOTAL_TESTS + 1))
+TMP_BODY=$(mktemp)
+echo -n '{"name":"Gzip","lang":"ja"}' | gzip -c > "$TMP_BODY"
+
+export REQUEST_METHOD="POST"
+export PATH_INFO="/hello"
+export REQUEST_URI="/hello"
+export QUERY_STRING=""
+export CONTENT_TYPE="application/json"
+export CONTENT_LENGTH=$(stat -c%s "$TMP_BODY")
+export SERVER_NAME="localhost"
+export SERVER_PORT="80"
+export HTTP_HOST="localhost"
+export HTTP_CONTENT_ENCODING="gzip"
+
+output=$("$BINARY_PATH" < "$TMP_BODY" 2>/dev/null)
+status_line=$(echo "$output" | head -1 | tr -d '\r')
+headers_end_line=$(echo "$output" | grep -n "^$\|^[[:space:]]*$" | head -1 | cut -d: -f1)
+body=""
+if [ -n "$headers_end_line" ]; then
+  body=$(echo "$output" | tail -n +"$((headers_end_line + 1))" | tr -d '\r')
+fi
+echo "  ステータス行: $status_line"
+echo "  レスポンスボディ: $body"
+# JSONならmessageを抽出
+message=$(echo "$body" | sed -n 's/.*"message"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+if [[ "$status_line" == *"200"* && "$message" == *"こんにちは、Gzip!"* ]]; then
+  echo -e "  ${GREEN}✓ PASS${NC}"
+  PASSED_TESTS=$((PASSED_TESTS + 1))
+else
+  echo -e "  ${RED}✗ FAIL${NC}"
+fi
+rm -f "$TMP_BODY"
+unset REQUEST_METHOD PATH_INFO REQUEST_URI QUERY_STRING CONTENT_TYPE CONTENT_LENGTH SERVER_NAME SERVER_PORT HTTP_HOST HTTP_CONTENT_ENCODING
+
 # 結果サマリーを表示
 echo -e "${YELLOW}===========================================${NC}"
 echo -e "${YELLOW}テスト結果サマリー${NC}"

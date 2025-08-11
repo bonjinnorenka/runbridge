@@ -229,6 +229,25 @@ run_http_test \
     "200" \
     '"timestamp":'
 
+# テストケース12: gzip圧縮JSONボディのPOST（ライブラリが展開し200を期待）
+TOTAL_TESTS=$((TOTAL_TESTS + 1))
+echo -e "${YELLOW}テスト実行中: gzip圧縮JSONのPOST（200期待）${NC}"
+gzip_body_response=$(echo -n '{"name":"Gzip","lang":"ja"}' | gzip -c | \
+  curl -s -w "HTTP_STATUS:%{http_code}" -X POST \
+    -H 'Content-Type: application/json' \
+    -H 'Content-Encoding: gzip' \
+    --data-binary @- "${BASE_URL}/hello" 2>/dev/null)
+gzip_http_status=$(echo "$gzip_body_response" | grep -o "HTTP_STATUS:[0-9]*" | cut -d: -f2)
+gzip_response_body=$(echo "$gzip_body_response" | sed 's/HTTP_STATUS:[0-9]*$//')
+echo "  HTTPステータス: $gzip_http_status"
+echo "  レスポンスボディ: $gzip_response_body"
+if [[ "$gzip_http_status" == "200" && "$gzip_response_body" == *"こんにちは、Gzip!"* ]]; then
+  echo -e "  ${GREEN}✓ PASS${NC}"
+  PASSED_TESTS=$((PASSED_TESTS + 1))
+else
+  echo -e "  ${RED}✗ FAIL${NC}"
+fi
+
 # コンテナログを表示（デバッグ用）
 echo -e "${BLUE}===========================================${NC}"
 echo -e "${BLUE}コンテナログ（最後の20行）${NC}"

@@ -8,6 +8,13 @@ struct GreetingResponse {
     timestamp: u64,
 }
 
+// POST用のリクエストボディ
+#[derive(Serialize, Deserialize)]
+struct GreetingRequest {
+    name: Option<String>,
+    lang: Option<String>,
+}
+
 // GETリクエスト用ハンドラー関数
 fn hello_handler(req: Request) -> Result<GreetingResponse, Error> {
     // クエリパラメータからnameを取得（一時オブジェクト問題を回避するためにletで変数を作成）
@@ -38,6 +45,27 @@ fn hello_handler(req: Request) -> Result<GreetingResponse, Error> {
     })
 }
 
+// POSTリクエスト用ハンドラー関数（JSONボディ）
+fn hello_post_handler(_req: Request, body: GreetingRequest) -> Result<GreetingResponse, Error> {
+    let name = body.name.unwrap_or_else(|| "World".to_string());
+    let language = body.lang.unwrap_or_else(|| "en".to_string());
+
+    let greeting = match language.as_str() {
+        "ja" => format!("こんにちは、{}!", name),
+        "fr" => format!("Bonjour, {} !", name),
+        "es" => format!("¡Hola, {}!", name),
+        "de" => format!("Hallo, {}!", name),
+        _ => format!("Hello, {}!", name),
+    };
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    Ok(GreetingResponse { message: greeting, timestamp: now })
+}
+
 #[tokio::main]
 async fn main() {
     // ロガーの初期化
@@ -46,6 +74,7 @@ async fn main() {
     // アプリケーションの構築
     let app = RunBridge::builder()
         .handler(handler::get("/hello", hello_handler))
+        .handler(handler::post("/hello", hello_post_handler))
         .build();
     
     // 環境に応じて実行方法を切り替え

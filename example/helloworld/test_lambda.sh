@@ -171,6 +171,25 @@ events = [
         "isBase64Encoded": False,
         "body": None
     })),
+    # req-10: gzip圧縮JSONボディのPOST（未対応 => 400想定）
+    ("req-10", (lambda: (
+        lambda payload: json.dumps({
+            "version": "2.0",
+            "routeKey": "$default",
+            "rawPath": "/hello",
+            "rawQueryString": "",
+            "headers": {
+                "host": "localhost",
+                "content-type": "application/json",
+                "content-encoding": "gzip"
+            },
+            "queryStringParameters": {},
+            "requestContext": {"http": {"method": "POST", "path": "/hello"}},
+            "pathParameters": {},
+            "isBase64Encoded": True,
+            "body": payload
+        })
+    )(__import__('base64').b64encode(__import__('gzip').compress(json.dumps({"name":"Gzip","lang":"ja"}).encode('utf-8'))).decode('ascii')))),
 ]
 
 class Handler(BaseHTTPRequestHandler):
@@ -299,6 +318,7 @@ run_check "lang=de"                 "req-6" 200 "Hallo, World!"
 run_check "name=太郎&lang=ja"       "req-7" 200 "こんにちは、太郎!"
 run_check "未知の言語（fallback）"    "req-8" 200 "Hello, Bob!"
 run_check "存在しないパス 404"       "req-9" 404 "Not Found"
+run_check "gzip圧縮JSON POST 200"    "req-10" 200 "こんにちは、Gzip!"
 
 # 6) サマリー
 echo -e "${YELLOW}===========================================${NC}"
