@@ -55,6 +55,12 @@ async fn convert_request(
     request.query_params = query_params;
     request.headers = headers;
     request.body = body;
+    
+    // gzipボディを解凍（必要な場合のみ）
+    if let Err(e) = request.decompress_gzip_body() {
+        warn!("Failed to decompress gzip body in Cloud Run: {}", e);
+    }
+    
     request
 }
 

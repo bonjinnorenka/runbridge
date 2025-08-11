@@ -42,6 +42,7 @@ temp-env = { version = "0.3", optional = true }
 futures = "0.3.31"
 
 chrono = { version = "0.4", features = ["clock", "default", "std"] }
+flate2 = "1.0"
 
 [features]
 default = []

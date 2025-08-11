@@ -2506,6 +2506,7 @@ dependencies = [
  "cgi",
  "chrono",
  "env_logger",
+ "flate2",
  "futures",
  "http 0.2.12",
  "httpmock",

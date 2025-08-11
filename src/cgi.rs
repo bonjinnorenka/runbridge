@@ -58,6 +58,16 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
         .collect();
     request.body = body;
     
+    // gzipボディを解凍（必要な場合のみ）
+    if let Err(e) = request.decompress_gzip_body() {
+        error!("Failed to decompress gzip body in CGI: {}", e);
+        let res = Response::new(400)
+            .with_header("Content-Type", "text/plain")
+            .with_body(format!("Bad Request: {}", e).as_bytes().to_vec());
+        write_response(res)?;
+        return Ok(());
+    }
+    
     // リクエストを処理
     debug!("Processing CGI request: {} {}", method, path);
     

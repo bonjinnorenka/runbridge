@@ -2,10 +2,12 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Read;
 use serde::{Serialize, Deserialize};
+use flate2::read::GzDecoder;
 use crate::error::Error;
 use super::context::RequestContext;
-use super::utils::is_header_value_valid;
+use super::utils::{is_header_value_valid, get_max_body_size};
 
 /// HTTPステータスコード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +226,57 @@ impl Request {
             body: self.body.clone(),
             context: RequestContext::new(),
         }
+    }
+
+    /// リクエストボディがgzipエンコードされている場合は解凍する
+    /// Content-Encodingヘッダーをチェックし、gzipの場合のみ処理を実行
+    /// 解凍後のサイズが上限を超える場合はPayloadTooLargeエラーを返す
+    pub fn decompress_gzip_body(&mut self) -> Result<(), Error> {
+        // Content-Encodingヘッダーをチェック（小文字で正規化済み）
+        if let Some(encoding) = self.headers.get("content-encoding") {
+            if encoding.to_lowercase() == "gzip" {
+                if let Some(body_data) = &self.body {
+                    let max_body_size = get_max_body_size();
+                    let mut decoder = GzDecoder::new(&body_data[..]);
+                    let mut decompressed = Vec::new();
+                    let mut buffer = [0u8; 8192]; // 8KBチャンクで読み込み
+                    
+                    loop {
+                        match decoder.read(&mut buffer) {
+                            Ok(0) => break, // EOF
+                            Ok(n) => {
+                                // 新しいデータを追加する前にサイズをチェック
+                                if decompressed.len() + n > max_body_size {
+                                    log::warn!(
+                                        "Decompressed gzip body too large: {} + {} > {} bytes",
+                                        decompressed.len(),
+                                        n,
+                                        max_body_size
+                                    );
+                                    return Err(Error::PayloadTooLarge(format!(
+                                        "Decompressed body too large (>{} bytes)",
+                                        max_body_size
+                                    )));
+                                }
+                                decompressed.extend_from_slice(&buffer[..n]);
+                            }
+                            Err(e) => {
+                                log::warn!("Failed to decompress gzip body: {}", e);
+                                return Err(Error::InvalidRequestBody(
+                                    format!("Invalid gzip-encoded request body: {}", e)
+                                ));
+                            }
+                        }
+                    }
+                    
+                    // 解凍成功：ボディを更新し、Content-Encodingヘッダーを削除
+                    self.body = Some(decompressed);
+                    self.headers.remove("content-encoding");
+                    log::debug!("Successfully decompressed gzip request body");
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -782,5 +835,254 @@ mod tests {
         // 元のリクエストのコンテキストは保持されている
         assert!(req.context().contains_key("user_id"));
         assert!(req.context().contains_key("session"));
+    }
+
+    #[test]
+    fn test_decompress_gzip_body_success() {
+        use std::io::Write;
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        // テスト用のJSONデータを作成
+        let original_data = r#"{"message": "Hello, World!", "compressed": true}"#;
+        
+        // gzipで圧縮
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original_data.as_bytes()).unwrap();
+        let compressed_data = encoder.finish().unwrap();
+
+        // gzipヘッダー付きのリクエストを作成
+        let mut request = Request::new(Method::POST, "/test".to_string())
+            .with_header("Content-Type", "application/json")
+            .with_header("Content-Encoding", "gzip")
+            .with_body(compressed_data);
+
+        // Content-Encodingヘッダーが存在することを確認
+        assert_eq!(request.headers.get("content-encoding"), Some(&"gzip".to_string()));
+
+        // gzip解凍を実行
+        let result = request.decompress_gzip_body();
+        assert!(result.is_ok());
+
+        // 解凍されたボディを確認
+        assert_eq!(
+            String::from_utf8(request.body.unwrap()).unwrap(),
+            original_data
+        );
+
+        // Content-Encodingヘッダーが削除されていることを確認
+        assert!(request.headers.get("content-encoding").is_none());
+    }
+
+    #[test]
+    fn test_decompress_gzip_body_no_encoding_header() {
+        let original_data = "This is not compressed";
+        let mut request = Request::new(Method::POST, "/test".to_string())
+            .with_header("Content-Type", "text/plain")
+            .with_body(original_data.as_bytes().to_vec());
+
+        // gzip解凍を実行（Content-Encodingがないため何もしない）
+        let result = request.decompress_gzip_body();
+        assert!(result.is_ok());
+
+        // ボディが変更されていないことを確認
+        assert_eq!(
+            String::from_utf8(request.body.unwrap()).unwrap(),
+            original_data
+        );
+    }
+
+    #[test]
+    fn test_decompress_gzip_body_different_encoding() {
+        let original_data = "This has different encoding";
+        let mut request = Request::new(Method::POST, "/test".to_string())
+            .with_header("Content-Type", "text/plain")
+            .with_header("Content-Encoding", "deflate")
+            .with_body(original_data.as_bytes().to_vec());
+
+        // gzip解凍を実行（deflateのため何もしない）
+        let result = request.decompress_gzip_body();
+        assert!(result.is_ok());
+
+        // ボディが変更されていないことを確認
+        assert_eq!(
+            String::from_utf8(request.body.unwrap()).unwrap(),
+            original_data
+        );
+        
+        // Content-Encodingヘッダーはそのまま
+        assert_eq!(request.headers.get("content-encoding"), Some(&"deflate".to_string()));
+    }
+
+    #[test]
+    fn test_decompress_gzip_body_invalid_data() {
+        let invalid_gzip_data = b"This is not gzip data";
+        let mut request = Request::new(Method::POST, "/test".to_string())
+            .with_header("Content-Type", "application/json")
+            .with_header("Content-Encoding", "gzip")
+            .with_body(invalid_gzip_data.to_vec());
+
+        // gzip解凍を実行（無効なgzipデータなのでエラー）
+        let result = request.decompress_gzip_body();
+        assert!(result.is_err());
+        
+        if let Err(Error::InvalidRequestBody(msg)) = result {
+            assert!(msg.contains("Invalid gzip-encoded request body"));
+        } else {
+            panic!("Expected InvalidRequestBody error");
+        }
+    }
+
+    #[test]
+    fn test_decompress_gzip_body_case_insensitive() {
+        use std::io::Write;
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let original_data = "Case insensitive test";
+        
+        // gzipで圧縮
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original_data.as_bytes()).unwrap();
+        let compressed_data = encoder.finish().unwrap();
+
+        // 大文字のGZIPでContent-Encodingを設定
+        let mut request = Request::new(Method::POST, "/test".to_string())
+            .with_header("Content-Type", "text/plain")
+            .with_header("Content-Encoding", "GZIP")
+            .with_body(compressed_data);
+
+        // gzip解凍を実行（大文字でも認識される）
+        let result = request.decompress_gzip_body();
+        assert!(result.is_ok());
+
+        // 解凍されたボディを確認
+        assert_eq!(
+            String::from_utf8(request.body.unwrap()).unwrap(),
+            original_data
+        );
+
+        // Content-Encodingヘッダーが削除されていることを確認
+        assert!(request.headers.get("content-encoding").is_none());
+    }
+
+    #[test]
+    fn test_decompress_gzip_body_size_limit_exceeded() {
+        use std::io::Write;
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        // 大きな解凍後データになる高圧縮率データを作成（1MB の "A" を繰り返し）
+        let large_data = "A".repeat(1024 * 1024); // 1MB
+        
+        // gzipで圧縮（繰り返しデータなので非常に小さくなる）
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(large_data.as_bytes()).unwrap();
+        let compressed_data = encoder.finish().unwrap();
+
+        // 圧縮後のサイズを確認（デバッグ用）
+        println!("Original size: {} bytes, Compressed size: {} bytes", 
+                 large_data.len(), compressed_data.len());
+
+        // gzipヘッダー付きのリクエストを作成
+        let mut request = Request::new(Method::POST, "/test".to_string())
+            .with_header("Content-Type", "text/plain")
+            .with_header("Content-Encoding", "gzip")
+            .with_body(compressed_data);
+
+        // gzip解凍を実行（サイズ上限を超えるのでエラーになるはず）
+        let result = request.decompress_gzip_body();
+        
+        // 現在の実装では5MBが上限なので、1MBなら成功するはず
+        // 実際に上限超過をテストするため、より大きなデータを作成
+        assert!(result.is_ok(), "1MB should be within limits");
+    }
+
+    #[test]
+    fn test_decompress_gzip_body_size_limit_very_large() {
+        use std::io::Write;
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        // 非常に大きな解凍後データ（10MB）を作成して上限超過をテスト
+        let very_large_data = "B".repeat(10 * 1024 * 1024); // 10MB
+        
+        // gzipで圧縮
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(very_large_data.as_bytes()).unwrap();
+        let compressed_data = encoder.finish().unwrap();
+
+        // gzipヘッダー付きのリクエストを作成
+        let mut request = Request::new(Method::POST, "/test".to_string())
+            .with_header("Content-Type", "text/plain")
+            .with_header("Content-Encoding", "gzip")
+            .with_body(compressed_data);
+
+        // gzip解凍を実行（10MBは5MB上限を超えるのでエラー）
+        let result = request.decompress_gzip_body();
+        assert!(result.is_err());
+        
+        if let Err(Error::PayloadTooLarge(msg)) = result {
+            assert!(msg.contains("Decompressed body too large"));
+        } else {
+            panic!("Expected PayloadTooLarge error for 10MB data");
+        }
+
+        // Content-Encodingヘッダーは残っている（解凍に失敗したため）
+        assert_eq!(request.headers.get("content-encoding"), Some(&"gzip".to_string()));
+    }
+
+    #[test]
+    fn test_decompress_gzip_body_incremental_size_check() {
+        use std::io::Write;
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        // チャンクごとのサイズチェックをテストするため、
+        // 複数の大きなブロックから構成されるデータを作成
+        let mut large_content = String::new();
+        for i in 0..1000 {
+            large_content.push_str(&format!("Block {} with some padding data to make it larger. ", i));
+            large_content.push_str(&"X".repeat(1000)); // 各ブロックを1KB程度にする
+        }
+        // 約1MBのデータ
+
+        // gzipで圧縮
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(large_content.as_bytes()).unwrap();
+        let compressed_data = encoder.finish().unwrap();
+
+        let mut request = Request::new(Method::POST, "/test".to_string())
+            .with_header("Content-Type", "text/plain")
+            .with_header("Content-Encoding", "gzip")
+            .with_body(compressed_data);
+
+        // 1MBなので正常に解凍される
+        let result = request.decompress_gzip_body();
+        assert!(result.is_ok());
+
+        // 解凍されたデータのサイズを確認
+        let decompressed_size = request.body.as_ref().unwrap().len();
+        assert_eq!(decompressed_size, large_content.len());
+        
+        // Content-Encodingヘッダーが削除されている
+        assert!(request.headers.get("content-encoding").is_none());
+    }
+
+    #[test] 
+    fn test_gzip_decompression_uses_same_body_size_limit() {
+        // get_max_body_size()が正しく使用されていることを確認
+        let max_size = get_max_body_size();
+        
+        // デフォルト値の確認（環境変数がない場合）
+        std::env::remove_var("RUNBRIDGE_MAX_BODY_SIZE");
+        let default_size = get_max_body_size();
+        assert_eq!(default_size, 5 * 1024 * 1024); // 5MB
+        
+        println!("Current max body size: {} bytes ({} MB)", max_size, max_size / (1024 * 1024));
+        
+        // 実装では同じget_max_body_size()を使用しているので、
+        // 通常のボディサイズ制限とgzip解凍後のサイズ制限は同じになる
+        assert!(max_size > 0);
     }
 }

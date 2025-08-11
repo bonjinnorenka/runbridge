@@ -118,6 +118,12 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Result<Request, AppE
     request.headers = headers;
     request.body = body;
 
+    // gzipボディを解凍（必要な場合のみ）
+    if let Err(e) = request.decompress_gzip_body() {
+        warn!("Failed to decompress gzip body in Lambda: {}", e);
+        return Err(e);
+    }
+
     // パスパラメータの処理
     for (key, value) in event.path_parameters.iter() {
         request.query_params.insert(format!("path_{}", key), value.to_string());
