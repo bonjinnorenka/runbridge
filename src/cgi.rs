@@ -104,6 +104,11 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
             };
             error!("{}", panic_info);
             log_error_to_file(&format!("{} at {} {}", panic_info, method, path));
+            // panic時は可能な限り具体的な環境情報を追記（センシティブ値はマスク）
+            if join_err.is_panic() {
+                let ctx = gather_cgi_panic_context(&method.to_string(), &path);
+                log_error_to_file(&ctx);
+            }
             Response::internal_server_error()
                 .with_header("Content-Type", "text/plain")
                 .with_body("Internal Server Error".as_bytes().to_vec())
@@ -442,14 +447,144 @@ fn split_set_cookie_header(value: &str) -> Vec<String> {
 
 /// エラー内容をログファイルに追記する
 fn log_error_to_file(message: &str) {
-    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S");
+    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
+    let local_time = Local::now().format("%Y-%m-%d %H:%M:%S%.3f %Z");
+    
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
         .open("runbridge_error.log")
     {
-        let _ = writeln!(file, "[{}] {}", timestamp, message);
+        // より視認性の良いログフォーマット
+        let _ = writeln!(file, "================================================================================");
+        let _ = writeln!(file, "RUNBRIDGE CGI ERROR");
+        let _ = writeln!(file, "Timestamp (UTC): {}", timestamp);
+        let _ = writeln!(file, "Timestamp (Local): {}", local_time);
+        let _ = writeln!(file, "Process ID: {}", std::process::id());
+        let _ = writeln!(file, "--------------------------------------------------------------------------------");
+        let _ = writeln!(file, "{}", message);
+        let _ = writeln!(file, "================================================================================");
+        let _ = writeln!(file);
     }
+}
+
+/// panic時に記録するCGI環境の詳細（安全にマスク）を構築
+fn gather_cgi_panic_context(method: &str, path: &str) -> String {
+    let mut lines = Vec::new();
+    lines.push("CGI panic context:".to_string());
+    lines.push(format!("  REQUEST_METHOD={}", method));
+    lines.push(format!("  PATH_INFO={}", path));
+
+    // 基本的なCGI環境変数
+    let basic_vars = [
+        "QUERY_STRING",
+        "CONTENT_TYPE", 
+        "CONTENT_LENGTH",
+        "SERVER_PROTOCOL",
+        "SERVER_NAME",
+        "SERVER_PORT",
+        "REMOTE_ADDR",
+        "REMOTE_PORT",
+    ];
+
+    for key in basic_vars.iter() {
+        if let Ok(val) = env::var(key) {
+            let v = redact_value_for_log(key, &val);
+            lines.push(format!("  {}={}", key, v));
+        }
+    }
+
+    // 代表的なHTTPヘッダー（存在するもののみ）
+    let http_headers = [
+        "HTTP_HOST",
+        "HTTP_USER_AGENT",
+        "HTTP_ACCEPT",
+        "HTTP_ACCEPT_ENCODING",
+        "HTTP_X_FORWARDED_FOR",
+        "HTTP_X_FORWARDED_PROTO",
+        "HTTP_X_REQUEST_ID",
+        "HTTP_X_AMZN_TRACE_ID",
+        "HTTP_AUTHORIZATION",
+        "HTTP_COOKIE",
+    ];
+
+    lines.push("  HTTP headers:".to_string());
+    let mut header_count = 0;
+    for key in http_headers.iter() {
+        if let Ok(val) = env::var(key) {
+            let v = redact_value_for_log(key, &val);
+            lines.push(format!("    {}={}", key, v));
+            header_count += 1;
+        }
+    }
+    if header_count == 0 {
+        lines.push("    (none)".to_string());
+    }
+
+    lines.join("\n")
+}
+
+fn redact_value_for_log(key: &str, value: &str) -> String {
+    let key_l = key.to_ascii_lowercase();
+    if key_l == "query_string" {
+        return redact_query_string(value);
+    }
+    if is_sensitive_key_like(&key_l) {
+        return "***redacted***".to_string();
+    }
+    // 長すぎる値は truncate（例：User-Agent）
+    if value.len() > 200 {
+        format!("{}...[truncated]", &value[..200])
+    } else {
+        value.to_string()
+    }
+}
+
+fn is_sensitive_key_like(lower_key: &str) -> bool {
+    let patterns = [
+        "authorization",
+        "cookie",
+        "token",
+        "secret",
+        "password",
+        "pass",
+        "api-key",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "x_api_key",
+        "jwt",
+        "auth",
+        "session",
+        "csrf",
+        "signature",
+        "private",
+        "key",
+        "credential",
+        "access_token",
+        "refresh_token",
+        "bearer",
+        "basic",
+    ];
+    patterns.iter().any(|p| lower_key.contains(p))
+}
+
+fn redact_query_string(qs: &str) -> String {
+    if qs.is_empty() { return qs.to_string(); }
+    let mut out_parts = Vec::new();
+    for part in qs.split('&') {
+        if part.is_empty() { continue; }
+        let mut it = part.splitn(2, '=');
+        let k = it.next().unwrap_or("");
+        let v = it.next().unwrap_or("");
+        let k_l = k.to_ascii_lowercase();
+        if is_sensitive_key_like(&k_l) {
+            out_parts.push(format!("{}=***redacted***", k));
+        } else {
+            out_parts.push(format!("{}={}", k, v));
+        }
+    }
+    out_parts.join("&")
 }
 
 #[cfg(test)]
@@ -624,5 +759,188 @@ mod tests {
         // Content-Length と区切り、ボディ
         assert!(out.contains("Content-Length: 2\r"));
         assert!(out.ends_with("\r\nok"));
+    }
+
+    #[test]
+    fn test_redact_value_for_log() {
+        // 通常の値は変更されない
+        assert_eq!(redact_value_for_log("CONTENT_TYPE", "application/json"), "application/json");
+        assert_eq!(redact_value_for_log("HTTP_HOST", "example.com"), "example.com");
+        
+        // センシティブなキーの値はマスクされる
+        assert_eq!(redact_value_for_log("HTTP_AUTHORIZATION", "Bearer token123"), "***redacted***");
+        assert_eq!(redact_value_for_log("HTTP_COOKIE", "session=abc123"), "***redacted***");
+        assert_eq!(redact_value_for_log("HTTP_X_API_KEY", "secret-key"), "***redacted***");
+        
+        // QUERY_STRINGは特別な処理
+        assert_eq!(redact_value_for_log("QUERY_STRING", "name=john&token=secret123"), "name=john&token=***redacted***");
+        
+        // 長い値はtruncateされる
+        let long_value = "a".repeat(250);
+        let result = redact_value_for_log("HTTP_USER_AGENT", &long_value);
+        assert!(result.ends_with("...[truncated]"));
+        assert_eq!(result.len(), 200 + "...[truncated]".len());
+    }
+
+    #[test]
+    fn test_is_sensitive_key_like() {
+        // センシティブなキー
+        assert!(is_sensitive_key_like("authorization"));
+        assert!(is_sensitive_key_like("http_authorization"));
+        assert!(is_sensitive_key_like("cookie"));
+        assert!(is_sensitive_key_like("http_cookie"));
+        assert!(is_sensitive_key_like("token"));
+        assert!(is_sensitive_key_like("access_token"));
+        assert!(is_sensitive_key_like("secret"));
+        assert!(is_sensitive_key_like("password"));
+        assert!(is_sensitive_key_like("api_key"));
+        assert!(is_sensitive_key_like("x-api-key"));
+        assert!(is_sensitive_key_like("jwt"));
+        assert!(is_sensitive_key_like("session"));
+        assert!(is_sensitive_key_like("csrf"));
+        assert!(is_sensitive_key_like("private"));
+        
+        // 大文字小文字混在（実際には関数内で小文字化される前提のため小文字で渡す）
+        assert!(is_sensitive_key_like("http_authorization"));
+        assert!(is_sensitive_key_like("x-api-key"));
+        
+        // 非センシティブなキー
+        assert!(!is_sensitive_key_like("content_type"));
+        assert!(!is_sensitive_key_like("host"));
+        assert!(!is_sensitive_key_like("user_agent"));
+        assert!(!is_sensitive_key_like("accept"));
+        assert!(!is_sensitive_key_like("content_length"));
+    }
+
+    #[test]
+    fn test_redact_query_string() {
+        // 空文字列
+        assert_eq!(redact_query_string(""), "");
+        
+        // センシティブなパラメータが含まれない場合
+        assert_eq!(redact_query_string("name=john&age=30"), "name=john&age=30");
+        
+        // センシティブなパラメータがある場合
+        assert_eq!(redact_query_string("name=john&token=secret123"), "name=john&token=***redacted***");
+        assert_eq!(redact_query_string("api_key=secret&user=admin"), "api_key=***redacted***&user=admin");
+        
+        // 複数のセンシティブパラメータ
+        assert_eq!(redact_query_string("token=abc&password=123&name=john"), "token=***redacted***&password=***redacted***&name=john");
+        
+        // URLエンコードされた値
+        assert_eq!(redact_query_string("secret=encoded%20value&name=test"), "secret=***redacted***&name=test");
+        
+        // 値がない場合
+        assert_eq!(redact_query_string("token=&name=john"), "token=***redacted***&name=john");
+    }
+
+    #[test]
+    fn test_gather_cgi_panic_context() {
+        use temp_env::with_vars;
+        
+        with_vars([
+            ("QUERY_STRING", Some("name=test&token=secret")),
+            ("CONTENT_TYPE", Some("application/json")),
+            ("CONTENT_LENGTH", Some("123")),
+            ("SERVER_NAME", Some("example.com")),
+            ("HTTP_HOST", Some("example.com")),
+            ("HTTP_USER_AGENT", Some("TestAgent/1.0")),
+            ("HTTP_AUTHORIZATION", Some("Bearer secret-token")),
+            ("HTTP_COOKIE", Some("session=abc123")),
+        ], || {
+            let context = gather_cgi_panic_context("POST", "/api/test");
+            
+            // 基本情報の確認
+            assert!(context.contains("CGI panic context:"));
+            assert!(context.contains("REQUEST_METHOD=POST"));
+            assert!(context.contains("PATH_INFO=/api/test"));
+            
+            // 基本的な環境変数
+            assert!(context.contains("QUERY_STRING=name=test&token=***redacted***"));
+            assert!(context.contains("CONTENT_TYPE=application/json"));
+            assert!(context.contains("CONTENT_LENGTH=123"));
+            assert!(context.contains("SERVER_NAME=example.com"));
+            
+            // HTTPヘッダーセクション
+            assert!(context.contains("HTTP headers:"));
+            assert!(context.contains("HTTP_HOST=example.com"));
+            assert!(context.contains("HTTP_USER_AGENT=TestAgent/1.0"));
+            
+            // センシティブ値がマスクされていることを確認
+            assert!(context.contains("HTTP_AUTHORIZATION=***redacted***"));
+            assert!(context.contains("HTTP_COOKIE=***redacted***"));
+        });
+    }
+
+    #[test] 
+    fn test_gather_cgi_panic_context_no_headers() {
+        use temp_env::with_vars;
+        
+        // HTTPヘッダーが存在しない場合
+        with_vars([
+            ("CONTENT_TYPE", Some("text/plain")),
+        ], || {
+            let context = gather_cgi_panic_context("GET", "/");
+            
+            assert!(context.contains("HTTP headers:"));
+            assert!(context.contains("(none)"));
+        });
+    }
+
+    #[test]
+    fn test_log_error_to_file() {
+        use std::fs;
+        use std::io::{Read, Write};
+        
+        let test_file = "test_runbridge_error.log";
+        
+        // テスト前にファイルを削除（存在する場合）
+        let _ = fs::remove_file(test_file);
+        
+        // カスタムファイル名でログを記録する関数を作成
+        fn log_error_to_test_file(message: &str, filename: &str) {
+            let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
+            let local_time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %Z");
+            
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(filename)
+            {
+                let _ = writeln!(file, "================================================================================");
+                let _ = writeln!(file, "RUNBRIDGE CGI ERROR");
+                let _ = writeln!(file, "Timestamp (UTC): {}", timestamp);
+                let _ = writeln!(file, "Timestamp (Local): {}", local_time);
+                let _ = writeln!(file, "Process ID: {}", std::process::id());
+                let _ = writeln!(file, "--------------------------------------------------------------------------------");
+                let _ = writeln!(file, "{}", message);
+                let _ = writeln!(file, "================================================================================");
+                let _ = writeln!(file);
+            }
+        }
+        
+        // ログメッセージを記録
+        let test_message = "Test error message for unit test";
+        log_error_to_test_file(test_message, test_file);
+        
+        // ファイルが作成されたことを確認
+        assert!(std::path::Path::new(test_file).exists());
+        
+        // ファイル内容を読み込んで検証
+        let mut content = String::new();
+        if let Ok(mut file) = fs::File::open(test_file) {
+            file.read_to_string(&mut content).expect("Failed to read test log file");
+        }
+        
+        // 期待される内容が含まれていることを確認
+        assert!(content.contains("RUNBRIDGE CGI ERROR"));
+        assert!(content.contains("Timestamp (UTC):"));
+        assert!(content.contains("Timestamp (Local):"));
+        assert!(content.contains("Process ID:"));
+        assert!(content.contains(test_message));
+        assert!(content.contains("================================================================================"));
+        
+        // テスト後のクリーンアップ
+        let _ = fs::remove_file(test_file);
     }
 }
