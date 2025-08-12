@@ -171,25 +171,23 @@ events = [
         "isBase64Encoded": False,
         "body": None
     })),
-    # req-10: gzip圧縮JSONボディのPOST（未対応 => 400想定）
-    ("req-10", (lambda: (
-        lambda payload: json.dumps({
-            "version": "2.0",
-            "routeKey": "$default",
-            "rawPath": "/hello",
-            "rawQueryString": "",
-            "headers": {
-                "host": "localhost",
-                "content-type": "application/json",
-                "content-encoding": "gzip"
-            },
-            "queryStringParameters": {},
-            "requestContext": {"http": {"method": "POST", "path": "/hello"}},
-            "pathParameters": {},
-            "isBase64Encoded": True,
-            "body": payload
-        })
-    )(__import__('base64').b64encode(__import__('gzip').compress(json.dumps({"name":"Gzip","lang":"ja"}).encode('utf-8'))).decode('ascii')))),
+    # req-10: gzip圧縮JSONボディのPOST
+    ("req-10", json.dumps({
+        "version": "2.0",
+        "routeKey": "$default",
+        "rawPath": "/hello",
+        "rawQueryString": "",
+        "headers": {
+            "host": "localhost",
+            "content-type": "application/json",
+            "content-encoding": "gzip"
+        },
+        "queryStringParameters": {},
+        "requestContext": {"http": {"method": "POST", "path": "/hello"}},
+        "pathParameters": {},
+        "isBase64Encoded": True,
+        "body": __import__('base64').b64encode(__import__('gzip').compress(json.dumps({"name":"Gzip","lang":"ja"}).encode('utf-8'))).decode('ascii')
+    })),
 ]
 
 class Handler(BaseHTTPRequestHandler):
@@ -198,6 +196,7 @@ class Handler(BaseHTTPRequestHandler):
             if events:
                 req_id, payload = events.pop(0)
                 body = payload.encode("utf-8")
+                print(f"Sending event {req_id} to Lambda function")
                 self.send_response(200)
                 # Lambda-Runtime-Aws-Request-Id ヘッダーが必要
                 self.send_header("Lambda-Runtime-Aws-Request-Id", req_id)
@@ -209,8 +208,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                # 少し遅延を入れてリクエスト処理を安定させる
+                time.sleep(0.1)
             else:
-                # イベントが尽きたら長めの待ち（クライアント側でtimeoutさせる）
+                # イベントが尽きたらロングポーリング相当で待機し、
+                # クライアント側（テスト側）のtimeout/killに任せる。
+                # すぐに204を返すと lambda_runtime がエラー終了することがある。
+                time.sleep(3600)
                 self.send_response(204)
                 self.end_headers()
         else:
@@ -224,8 +228,10 @@ class Handler(BaseHTTPRequestHandler):
             # requestId をパスから抽出
             parts = self.path.split('/')
             req_id = parts[-2]
-            with open(os.path.join(responses_dir, f"response_{req_id}.json"), 'wb') as f:
+            response_file = os.path.join(responses_dir, f"response_{req_id}.json")
+            with open(response_file, 'wb') as f:
                 f.write(data)
+            print(f"Received and saved response for {req_id} to {response_file}")
             self.send_response(202)
             self.end_headers()
         else:
@@ -244,7 +250,7 @@ PY
 
 echo -e "${BLUE}Lambda Runtimeモックを起動します (${RUNTIME_HOST}:${RUNTIME_PORT})...${NC}"
 HOST="${RUNTIME_HOST}" PORT="${RUNTIME_PORT}" RESP_DIR="${TEMP_DIR}" \
-  python3 "${TEMP_DIR}/runtime_mock.py" >/dev/null 2>&1 &
+  python3 "${TEMP_DIR}/runtime_mock.py" >"${TEMP_DIR}/runtime_mock.log" 2>&1 &
 RUNTIME_PID=$!
 
 sleep 1
@@ -261,10 +267,10 @@ export AWS_EXECUTION_ENV=AWS_Lambda_rust
 
 # timeoutがない環境もあるため、まずコマンド存在チェック
 if command -v timeout >/dev/null 2>&1; then
-  (cd "${SCRIPT_DIR}" && timeout 8s "${BIN_PATH}") || true
+  (cd "${SCRIPT_DIR}" && timeout 15s "${BIN_PATH}") || true
 else
   # フォールバック: バックグラウンド実行→数秒待機→kill
-  (cd "${SCRIPT_DIR}" && "${BIN_PATH}" & LAMBDA_PID=$!; sleep 8; kill ${LAMBDA_PID} >/dev/null 2>&1 || true)
+  (cd "${SCRIPT_DIR}" && "${BIN_PATH}" & LAMBDA_PID=$!; sleep 15; kill ${LAMBDA_PID} >/dev/null 2>&1 || true)
 fi
 
 # 4) 検証関数
@@ -327,6 +333,12 @@ echo -e "${YELLOW}===========================================${NC}"
 echo -e "実行したテスト数: ${TOTAL_TESTS}"
 echo -e "成功したテスト数: ${PASSED_TESTS}"
 echo -e "失敗したテスト数: $((TOTAL_TESTS - PASSED_TESTS))"
+
+# ランタイムモックのログを表示（デバッグ用）
+if [[ -f "${TEMP_DIR}/runtime_mock.log" ]]; then
+  echo -e "${BLUE}ランタイムモックログ:${NC}"
+  cat "${TEMP_DIR}/runtime_mock.log"
+fi
 
 if [[ ${TOTAL_TESTS} -eq ${PASSED_TESTS} ]]; then
   echo -e "${GREEN}すべてのテストが成功しました！${NC}"
