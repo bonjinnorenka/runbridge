@@ -14,7 +14,9 @@ use super::response::ResponseWrapper;
 pub type BodyOrError<Fut, R> = future::Either<Ready<Result<R, Error>>, Fut>;
 
 // 同期: Option<T> から T を要求し、なければエラーにする薄いアダプタ
-fn require_body_sync<F, T, R>(handler: F) -> impl Fn(Request, Option<T>) -> Result<R, Error> + Send + Sync + 'static
+fn require_body_sync<F, T, R>(
+    handler: F,
+) -> impl Fn(Request, Option<T>) -> Result<R, Error> + Send + Sync + 'static
 where
     F: Fn(Request, T) -> Result<R, Error> + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + Send + Sync + 'static,
@@ -24,13 +26,17 @@ where
         if let Some(data) = body_data {
             handler(req, data)
         } else {
-            Err(Error::InvalidRequestBody("Missing request body".to_string()))
+            Err(Error::InvalidRequestBody(
+                "Missing request body".to_string(),
+            ))
         }
     }
 }
 
 // 非同期: Option<T> から T を要求し、なければ即時エラーfutureを返すアダプタ
-fn require_body_async<F, T, R, Fut>(handler: F) -> impl Fn(Request, Option<T>) -> BodyOrError<Fut, R> + Send + Sync + 'static
+fn require_body_async<F, T, R, Fut>(
+    handler: F,
+) -> impl Fn(Request, Option<T>) -> BodyOrError<Fut, R> + Send + Sync + 'static
 where
     F: Fn(Request, T) -> Fut + Send + Sync + 'static,
     T: serde::de::DeserializeOwned + Send + Sync + 'static,
@@ -49,7 +55,10 @@ where
 }
 
 /// マクロでHTTPハンドラーを生成するための補助関数
-pub fn get<F, R>(path: impl Into<String>, handler: F) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
+pub fn get<F, R>(
+    path: impl Into<String>,
+    handler: F,
+) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
 where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
@@ -59,7 +68,13 @@ where
 }
 
 /// マクロでHTTPハンドラーを生成するための補助関数（エラーハンドリング付き）
-pub fn try_get<F, R>(path: impl Into<String>, handler: F) -> Result<RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>, Error>
+pub fn try_get<F, R>(
+    path: impl Into<String>,
+    handler: F,
+) -> Result<
+    RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>,
+    Error,
+>
 where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
@@ -68,7 +83,10 @@ where
 }
 
 /// 非同期GETハンドラーを作成
-pub fn async_get<F, R, Fut>(path: impl Into<String>, handler: F) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
+pub fn async_get<F, R, Fut>(
+    path: impl Into<String>,
+    handler: F,
+) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
@@ -79,7 +97,13 @@ where
 }
 
 /// 非同期GETハンドラーを作成（エラーハンドリング付き）
-pub fn try_async_get<F, R, Fut>(path: impl Into<String>, handler: F) -> Result<AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>, Error>
+pub fn try_async_get<F, R, Fut>(
+    path: impl Into<String>,
+    handler: F,
+) -> Result<
+    AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>,
+    Error,
+>
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
@@ -89,7 +113,10 @@ where
 }
 
 /// POSTハンドラーを作成
-pub fn post<F, T, R>(path: impl Into<String>, handler: F) -> RouteHandler<impl Fn(Request, Option<T>) -> Result<R, Error> + Send + Sync + 'static, T, R>
+pub fn post<F, T, R>(
+    path: impl Into<String>,
+    handler: F,
+) -> RouteHandler<impl Fn(Request, Option<T>) -> Result<R, Error> + Send + Sync + 'static, T, R>
 where
     F: Fn(Request, T) -> Result<R, Error> + Send + Sync + 'static,
     T: DeserializeOwned + Send + Sync + 'static,
@@ -100,7 +127,15 @@ where
 }
 
 /// 非同期POSTハンドラーを作成
-pub fn async_post<F, T, R, Fut>(path: impl Into<String>, handler: F) -> AsyncRouteHandler<impl Fn(Request, Option<T>) -> BodyOrError<Fut, R> + Send + Sync + 'static, T, R, BodyOrError<Fut, R>>
+pub fn async_post<F, T, R, Fut>(
+    path: impl Into<String>,
+    handler: F,
+) -> AsyncRouteHandler<
+    impl Fn(Request, Option<T>) -> BodyOrError<Fut, R> + Send + Sync + 'static,
+    T,
+    R,
+    BodyOrError<Fut, R>,
+>
 where
     F: Fn(Request, T) -> Fut + Send + Sync + 'static,
     T: DeserializeOwned + Send + Sync + 'static,
@@ -112,7 +147,10 @@ where
 }
 
 /// PUTハンドラーを作成
-pub fn put<F, T, R>(path: impl Into<String>, handler: F) -> RouteHandler<impl Fn(Request, Option<T>) -> Result<R, Error> + Send + Sync + 'static, T, R>
+pub fn put<F, T, R>(
+    path: impl Into<String>,
+    handler: F,
+) -> RouteHandler<impl Fn(Request, Option<T>) -> Result<R, Error> + Send + Sync + 'static, T, R>
 where
     F: Fn(Request, T) -> Result<R, Error> + Send + Sync + 'static,
     T: DeserializeOwned + Send + Sync + 'static,
@@ -123,7 +161,15 @@ where
 }
 
 /// 非同期PUTハンドラーを作成
-pub fn async_put<F, T, R, Fut>(path: impl Into<String>, handler: F) -> AsyncRouteHandler<impl Fn(Request, Option<T>) -> BodyOrError<Fut, R> + Send + Sync + 'static, T, R, BodyOrError<Fut, R>>
+pub fn async_put<F, T, R, Fut>(
+    path: impl Into<String>,
+    handler: F,
+) -> AsyncRouteHandler<
+    impl Fn(Request, Option<T>) -> BodyOrError<Fut, R> + Send + Sync + 'static,
+    T,
+    R,
+    BodyOrError<Fut, R>,
+>
 where
     F: Fn(Request, T) -> Fut + Send + Sync + 'static,
     T: DeserializeOwned + Send + Sync + 'static,
@@ -135,7 +181,10 @@ where
 }
 
 /// DELETEハンドラーを作成
-pub fn delete<F, R>(path: impl Into<String>, handler: F) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
+pub fn delete<F, R>(
+    path: impl Into<String>,
+    handler: F,
+) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
 where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
@@ -145,7 +194,10 @@ where
 }
 
 /// 非同期DELETEハンドラーを作成
-pub fn async_delete<F, R, Fut>(path: impl Into<String>, handler: F) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
+pub fn async_delete<F, R, Fut>(
+    path: impl Into<String>,
+    handler: F,
+) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
@@ -156,7 +208,10 @@ where
 }
 
 /// OPTIONSハンドラーを作成
-pub fn options<F, R>(path: impl Into<String>, handler: F) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
+pub fn options<F, R>(
+    path: impl Into<String>,
+    handler: F,
+) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
 where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,
@@ -166,7 +221,10 @@ where
 }
 
 /// 非同期OPTIONSハンドラーを作成
-pub fn async_options<F, R, Fut>(path: impl Into<String>, handler: F) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
+pub fn async_options<F, R, Fut>(
+    path: impl Into<String>,
+    handler: F,
+) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
     R: ResponseWrapper + Send + Sync + 'static,

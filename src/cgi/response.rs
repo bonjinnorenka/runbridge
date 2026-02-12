@@ -1,12 +1,12 @@
 //! CGIレスポンスの出力機能
 
-use std::io::{self, Write};
 use log::error;
+use std::io::{self, Write};
 
+use super::error_logging::log_error_to_file;
+use super::validation::{is_valid_header_name, is_valid_header_value};
 use crate::common::Response;
 use crate::error::Error;
-use super::validation::{is_valid_header_name, is_valid_header_value};
-use super::error_logging::log_error_to_file;
 
 /// レスポンスを任意のライターへ書き出す（テスト容易化のため公開しない）
 pub fn write_response_to<W: Write>(mut response: Response, out: &mut W) -> Result<(), Error> {
@@ -19,7 +19,10 @@ pub fn write_response_to<W: Write>(mut response: Response, out: &mut W) -> Resul
             continue;
         }
         if !is_valid_header_name(name) || !is_valid_header_value(value) {
-            error!("Invalid header detected - name: '{}', value: '{}'", name, value);
+            error!(
+                "Invalid header detected - name: '{}', value: '{}'",
+                name, value
+            );
             log_error_to_file(&format!(
                 "CRLF injection attempt detected in header: '{}': '{}'",
                 name, value
@@ -73,23 +76,24 @@ pub fn write_response_to<W: Write>(mut response: Response, out: &mut W) -> Resul
 
     // 通常ヘッダーを出力
     for (name, value) in normal_headers {
-        out.write_all(format!("{}: {}\r\n", name, value).as_bytes()).map_err(|e| {
-            Error::InternalServerError(format!("Failed to write header: {}", e))
-        })?;
+        out.write_all(format!("{}: {}\r\n", name, value).as_bytes())
+            .map_err(|e| Error::InternalServerError(format!("Failed to write header: {}", e)))?;
     }
 
     // Set-Cookie を複数行で出力
     for cookie in set_cookie_values {
-        out.write_all(format!("Set-Cookie: {}\r\n", cookie).as_bytes()).map_err(|e| {
-            Error::InternalServerError(format!("Failed to write Set-Cookie header: {}", e))
-        })?;
+        out.write_all(format!("Set-Cookie: {}\r\n", cookie).as_bytes())
+            .map_err(|e| {
+                Error::InternalServerError(format!("Failed to write Set-Cookie header: {}", e))
+            })?;
     }
 
     // Content-Length をフレームワーク側で付与（ボディがある場合）
     if let Some(body) = &response.body {
-        out.write_all(format!("Content-Length: {}\r\n", body.len()).as_bytes()).map_err(|e| {
-            Error::InternalServerError(format!("Failed to write Content-Length: {}", e))
-        })?;
+        out.write_all(format!("Content-Length: {}\r\n", body.len()).as_bytes())
+            .map_err(|e| {
+                Error::InternalServerError(format!("Failed to write Content-Length: {}", e))
+            })?;
     }
 
     // ヘッダーとボディの区切り（CRLF）
@@ -111,7 +115,8 @@ pub fn write_response_to<W: Write>(mut response: Response, out: &mut W) -> Resul
 pub fn write_response(response: Response) -> Result<(), Error> {
     let mut out = io::stdout().lock();
     let res = write_response_to(response, &mut out);
-    out.flush().map_err(|e| Error::InternalServerError(format!("Failed to flush stdout: {}", e)))?;
+    out.flush()
+        .map_err(|e| Error::InternalServerError(format!("Failed to flush stdout: {}", e)))?;
     res
 }
 
@@ -146,15 +151,22 @@ pub fn split_set_cookie_header(value: &str) -> Vec<String> {
                     let mut iter = chars.clone();
                     let mut seen_eq_before_semicolon = false;
                     while let Some(&c) = iter.peek() {
-                        if c == ';' || c == ',' { break; }
-                        if c == '=' { seen_eq_before_semicolon = true; break; }
+                        if c == ';' || c == ',' {
+                            break;
+                        }
+                        if c == '=' {
+                            seen_eq_before_semicolon = true;
+                            break;
+                        }
                         lookahead.push(c);
                         iter.next();
                     }
                     if seen_eq_before_semicolon {
                         // ここで一旦Cookieを確定
                         let part = buf.trim();
-                        if !part.is_empty() { result.push(part.to_string()); }
+                        if !part.is_empty() {
+                            result.push(part.to_string());
+                        }
                         buf.clear();
                         continue;
                     } else {
@@ -168,10 +180,16 @@ pub fn split_set_cookie_header(value: &str) -> Vec<String> {
                 // 現在位置から "xpires=" までを確認（ケースインセンシティブ）
                 let mut shadow = chars.clone();
                 let mut matches = true;
-                for expected in ['x','p','i','r','e','s','='] {
+                for expected in ['x', 'p', 'i', 'r', 'e', 's', '='] {
                     if let Some(c) = shadow.next() {
-                        if c.to_ascii_lowercase() != expected { matches = false; break; }
-                    } else { matches = false; break; }
+                        if c.to_ascii_lowercase() != expected {
+                            matches = false;
+                            break;
+                        }
+                    } else {
+                        matches = false;
+                        break;
+                    }
                 }
                 if matches {
                     in_expires = true;

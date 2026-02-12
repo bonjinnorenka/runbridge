@@ -17,4 +17,3 @@ pub fn is_json_like_content_type(ct: &str) -> bool {
         || main_type.ends_with("+json")
         || EXTRA_ALLOWED.contains(&main_type.as_str())
 }
-

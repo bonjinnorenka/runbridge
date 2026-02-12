@@ -1,8 +1,8 @@
 //! 共通ユーティリティ関数群（URLデコード、クエリ解析、環境設定 等）
 
+use crate::error::Error;
 use std::collections::HashMap;
 use std::env;
-use crate::error::Error;
 
 /// URLエンコーディングのデコード関数
 pub fn percent_decode(input: &str) -> String {
@@ -84,17 +84,44 @@ pub fn is_header_value_valid(value: &str) -> bool {
 /// ヘッダー名が安全なトークンかを簡易判定（使わないが将来拡張用）
 #[allow(dead_code)]
 pub fn is_header_name_valid(name: &str) -> bool {
-    if name.is_empty() { return false; }
+    if name.is_empty() {
+        return false;
+    }
     // token = 1*tchar, tchar = "!#$%&'*+-.^_`|~" or DIGIT or ALPHA
-    name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '!'|'#'|'$'|'%'|'&'|'\''|'*'|'+'|'-'|'.'|'^'|'_'|'`'|'|'|'~'))
+    name.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '!' | '#'
+                    | '$'
+                    | '%'
+                    | '&'
+                    | '\''
+                    | '*'
+                    | '+'
+                    | '-'
+                    | '.'
+                    | '^'
+                    | '_'
+                    | '`'
+                    | '|'
+                    | '~'
+            )
+    })
 }
 
 /// Cookie名が安全なトークンか（RFC6265準拠の簡易版）
 pub fn is_cookie_name_valid(name: &str) -> bool {
-    if name.is_empty() { return false; }
+    if name.is_empty() {
+        return false;
+    }
     // tokenと同等: 制御/空白とセパレータを除外
-    const FORBIDDEN: &[char] = &['(',')','<','>','@',',',';',':','\\','"','/','[',']','?','{','}',' ','\t','\r','\n'];
-    name.chars().all(|c| c.is_ascii() && !c.is_ascii_control() && !FORBIDDEN.contains(&c))
+    const FORBIDDEN: &[char] = &[
+        '(', ')', '<', '>', '@', ',', ';', ':', '\\', '"', '/', '[', ']', '?', '{', '}', ' ', '\t',
+        '\r', '\n',
+    ];
+    name.chars()
+        .all(|c| c.is_ascii() && !c.is_ascii_control() && !FORBIDDEN.contains(&c))
 }
 
 /// Cookie値が安全か（RFC6265 cookie-octetの簡易版）
@@ -114,16 +141,26 @@ pub fn is_cookie_value_valid(value: &str) -> bool {
 
 /// ヘルパー: 無効なヘッダー値ならErrorを返す
 pub fn validate_header_value(value: &str) -> Result<(), Error> {
-    if is_header_value_valid(value) { Ok(()) } else { Err(Error::InvalidHeader("header value contains control/CRLF or invalid chars".into())) }
+    if is_header_value_valid(value) {
+        Ok(())
+    } else {
+        Err(Error::InvalidHeader(
+            "header value contains control/CRLF or invalid chars".into(),
+        ))
+    }
 }
 
 /// ヘルパー: 無効なCookie名/値ならErrorを返す
 pub fn validate_cookie_name_value(name: &str, value: &str) -> Result<(), Error> {
     if !is_cookie_name_valid(name) {
-        return Err(Error::InvalidCookie("cookie name contains invalid characters".into()));
+        return Err(Error::InvalidCookie(
+            "cookie name contains invalid characters".into(),
+        ));
     }
     if !is_cookie_value_valid(value) {
-        return Err(Error::InvalidCookie("cookie value contains invalid characters".into()));
+        return Err(Error::InvalidCookie(
+            "cookie value contains invalid characters".into(),
+        ));
     }
     Ok(())
 }
@@ -136,7 +173,7 @@ mod tests {
     fn test_parse_query_string() {
         let query = "name=John&age=30&city=Tokyo";
         let params = parse_query_string(query);
-        
+
         assert_eq!(params.get("name"), Some(&"John".to_string()));
         assert_eq!(params.get("age"), Some(&"30".to_string()));
         assert_eq!(params.get("city"), Some(&"Tokyo".to_string()));
@@ -145,7 +182,8 @@ mod tests {
     #[test]
     fn test_parse_query_string_url_encoding() {
         // URLエンコードされたクエリ文字列
-        let query = "name=%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A&city=Tokyo%20Station&lang=ja%2Den";
+        let query =
+            "name=%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A&city=Tokyo%20Station&lang=ja%2Den";
         let params = parse_query_string(query);
 
         // "あいうえお"（UTF-8でURLエンコード）
@@ -162,7 +200,10 @@ mod tests {
         assert_eq!(percent_decode("test%2Bvalue"), "test+value");
         assert_eq!(percent_decode("normal"), "normal");
         assert_eq!(percent_decode("plus+space"), "plus space"); // +もスペースに変換
-        assert_eq!(percent_decode("%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A"), "あいうえお");
+        assert_eq!(
+            percent_decode("%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A"),
+            "あいうえお"
+        );
     }
 }
 

@@ -171,7 +171,9 @@ where
         }
 
         // コンパイル済み正規表現を取得またはコンパイル
-        let compiled_result = self.compiled_regex.get_or_init(|| Regex::new(&self.path_pattern));
+        let compiled_result = self
+            .compiled_regex
+            .get_or_init(|| Regex::new(&self.path_pattern));
 
         match compiled_result {
             Ok(regex) => {
@@ -263,7 +265,9 @@ where
         }
 
         // コンパイル済み正規表現を取得またはコンパイル
-        let compiled_result = self.compiled_regex.get_or_init(|| Regex::new(&self.path_pattern));
+        let compiled_result = self
+            .compiled_regex
+            .get_or_init(|| Regex::new(&self.path_pattern));
 
         match compiled_result {
             Ok(regex) => {
@@ -340,4 +344,3 @@ where
         result.into_response()
     }
 }
-

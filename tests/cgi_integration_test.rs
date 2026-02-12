@@ -21,13 +21,13 @@ fn test_cgi_hello_endpoint() {
 
     // 出力を確認
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // ステータスコードが200であることを確認
     assert!(stdout.contains("Status: 200 OK"));
-    
+
     // Content-Typeヘッダーを確認
     assert!(stdout.contains("Content-Type: application/json"));
-    
+
     // レスポンスボディを確認
     assert!(stdout.contains("Hello from RunBridge CGI"));
 }
@@ -47,13 +47,13 @@ fn test_cgi_echo_endpoint_get() {
 
     // 出力を確認
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // ステータスコードが200であることを確認
     assert!(stdout.contains("Status: 200 OK"));
-    
+
     // Content-Typeヘッダーを確認
     assert!(stdout.contains("Content-Type: application/json"));
-    
+
     // レスポンスボディを確認
     assert!(stdout.contains("\"method\":\"GET\""));
     assert!(stdout.contains("\"path\":\"/echo\""));
@@ -67,7 +67,7 @@ fn test_cgi_echo_endpoint_get() {
 #[test]
 fn test_cgi_echo_endpoint_post() {
     let json_body = r#"{"message":"Hello, world!"}"#;
-    
+
     let output = run_cgi_with_env(
         vec![
             ("REQUEST_METHOD", Some("POST")),
@@ -81,13 +81,13 @@ fn test_cgi_echo_endpoint_post() {
 
     // 出力を確認
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // ステータスコードが200であることを確認
     assert!(stdout.contains("Status: 200 OK"));
-    
+
     // Content-Typeヘッダーを確認
     assert!(stdout.contains("Content-Type: application/json"));
-    
+
     // レスポンスボディを確認
     assert!(stdout.contains("\"method\":\"POST\""));
     assert!(stdout.contains("\"path\":\"/echo\""));
@@ -108,7 +108,7 @@ fn test_cgi_not_found() {
 
     // 出力を確認
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // ステータスコードが404であることを確認
     assert!(stdout.contains("Status: 404 Not Found"));
     // 固定文言のみ返し、内部詳細は露出しないことを確認
@@ -154,7 +154,7 @@ fn test_cgi_panic_handling() {
 
     // 出力を確認
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // パニックが発生しても500エラーが返されることを確認
     assert!(stdout.contains("Status: 500 Internal Server Error"));
     assert!(stdout.contains("Content-Type: text/plain"));
@@ -162,18 +162,21 @@ fn test_cgi_panic_handling() {
 }
 
 /// CGI環境をシミュレートして実行
-fn run_cgi_with_env(env_vars: Vec<(&str, Option<&str>)>, stdin_data: &[u8]) -> std::process::Output {
+fn run_cgi_with_env(
+    env_vars: Vec<(&str, Option<&str>)>,
+    stdin_data: &[u8],
+) -> std::process::Output {
     // 現在のパスでcargo buildを実行してバイナリをビルド
     let build_status = Command::new("cargo")
         .args(["build", "--features", "cgi", "--bin", "runbridge-cgi"])
         .status()
         .expect("Failed to build CGI binary");
-        
+
     assert!(build_status.success(), "Build failed");
-    
+
     // 実行ファイルへのパスを取得
     let cgi_binary_path = "target/debug/runbridge-cgi";
-    
+
     // with_vars内でCommandを実行
     with_vars(env_vars, || {
         let mut child = Command::new(cgi_binary_path)
@@ -182,15 +185,19 @@ fn run_cgi_with_env(env_vars: Vec<(&str, Option<&str>)>, stdin_data: &[u8]) -> s
             .stderr(Stdio::piped())
             .spawn()
             .expect("Failed to spawn CGI process");
-            
+
         // 標準入力にデータを書き込む
         if !stdin_data.is_empty() {
             let mut stdin = child.stdin.take().expect("Failed to open stdin");
-            stdin.write_all(stdin_data).expect("Failed to write to stdin");
+            stdin
+                .write_all(stdin_data)
+                .expect("Failed to write to stdin");
             // ここでstdinはドロップされ、パイプが閉じられる
         }
-        
+
         // プロセスの実行が完了するまで待機し、Output構造体を取得
-        child.wait_with_output().expect("Failed to wait for CGI process")
+        child
+            .wait_with_output()
+            .expect("Failed to wait for CGI process")
     })
-} 
+}

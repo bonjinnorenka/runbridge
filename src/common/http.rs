@@ -1,13 +1,13 @@
 //! HTTP関連の基本型とユーティリティ
 
+use super::context::RequestContext;
+use super::utils::{get_max_body_size, is_header_value_valid};
+use crate::error::Error;
+use flate2::read::GzDecoder;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
-use serde::{Serialize, Deserialize};
-use flate2::read::GzDecoder;
-use crate::error::Error;
-use super::context::RequestContext;
-use super::utils::{is_header_value_valid, get_max_body_size};
 
 /// HTTPステータスコード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,7 +16,7 @@ pub enum StatusCode {
     Ok = 200,
     Created = 201,
     NoContent = 204,
-    
+
     // 4xx Client Error
     BadRequest = 400,
     Unauthorized = 401,
@@ -27,7 +27,7 @@ pub enum StatusCode {
     UnprocessableEntity = 422,
     Locked = 423,
     TooManyRequests = 429,
-    
+
     // 5xx Server Error
     InternalServerError = 500,
     NotImplemented = 501,
@@ -170,7 +170,11 @@ impl Request {
         let v = value.into();
         // 値の安全性チェック（CRLF/制御文字を拒否）
         if !is_header_value_valid(&v) {
-            log::warn!("Request::with_header rejected invalid value for '{}': {:?}", k, v);
+            log::warn!(
+                "Request::with_header rejected invalid value for '{}': {:?}",
+                k,
+                v
+            );
             return self;
         }
         // リクエスト側のヘッダーキーは大小無視のため小文字化して格納
@@ -189,8 +193,7 @@ impl Request {
     /// ボディをJSONとしてパース
     pub fn json<T: for<'de> Deserialize<'de>>(&self) -> Result<T, Error> {
         if let Some(body) = &self.body {
-            serde_json::from_slice(body)
-                .map_err(|e| Error::InvalidRequestBody(e.to_string()))
+            serde_json::from_slice(body).map_err(|e| Error::InvalidRequestBody(e.to_string()))
         } else {
             Err(Error::InvalidRequestBody("No request body".to_string()))
         }
@@ -217,7 +220,7 @@ impl Request {
     pub fn clone_without_context(&self) -> Self {
         #[cfg(debug_assertions)]
         log::debug!("Request::clone_without_context() called - context will be empty");
-        
+
         Self {
             method: self.method,
             path: self.path.clone(),
@@ -240,7 +243,7 @@ impl Request {
                     let mut decoder = GzDecoder::new(&body_data[..]);
                     let mut decompressed = Vec::new();
                     let mut buffer = [0u8; 8192]; // 8KBチャンクで読み込み
-                    
+
                     loop {
                         match decoder.read(&mut buffer) {
                             Ok(0) => break, // EOF
@@ -262,13 +265,14 @@ impl Request {
                             }
                             Err(e) => {
                                 log::warn!("Failed to decompress gzip body: {}", e);
-                                return Err(Error::InvalidRequestBody(
-                                    format!("Invalid gzip-encoded request body: {}", e)
-                                ));
+                                return Err(Error::InvalidRequestBody(format!(
+                                    "Invalid gzip-encoded request body: {}",
+                                    e
+                                )));
                             }
                         }
                     }
-                    
+
                     // 解凍成功：ボディを更新し、Content-Encodingヘッダーを削除
                     self.body = Some(decompressed);
                     self.headers.remove("content-encoding");
@@ -321,7 +325,11 @@ impl Response {
         let k = key.into();
         let v = value.into();
         if !is_header_value_valid(&v) {
-            log::warn!("Response::with_header rejected invalid value for '{}': {:?}", k, v);
+            log::warn!(
+                "Response::with_header rejected invalid value for '{}': {:?}",
+                k,
+                v
+            );
             return self;
         }
         self.headers.insert(k, v);
@@ -338,8 +346,9 @@ impl Response {
     pub fn json<T: Serialize>(mut self, value: &T) -> Result<Self, Error> {
         let json = serde_json::to_vec(value)
             .map_err(|e| Error::ResponseSerializationError(e.to_string()))?;
-        
-        self.headers.insert("Content-Type".to_string(), "application/json".to_string());
+
+        self.headers
+            .insert("Content-Type".to_string(), "application/json".to_string());
         self.body = Some(json);
         Ok(self)
     }
@@ -416,7 +425,11 @@ impl ResponseBuilder {
         let mut headers = HashMap::new();
         // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
         inject_default_security_headers(&mut headers);
-        Self { status, headers, body: None }
+        Self {
+            status,
+            headers,
+            body: None,
+        }
     }
 
     /// 新しいResponseBuilderを作成（StatusCode）
@@ -424,7 +437,11 @@ impl ResponseBuilder {
         let mut headers = HashMap::new();
         // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
         inject_default_security_headers(&mut headers);
-        Self { status: status.as_u16(), headers, body: None }
+        Self {
+            status: status.as_u16(),
+            headers,
+            body: None,
+        }
     }
 
     /// 既存のResponseからResponseBuilderを作成
@@ -441,7 +458,11 @@ impl ResponseBuilder {
         let k = key.into();
         let v = value.into();
         if !is_header_value_valid(&v) {
-            log::warn!("ResponseBuilder::header rejected invalid value for '{}': {:?}", k, v);
+            log::warn!(
+                "ResponseBuilder::header rejected invalid value for '{}': {:?}",
+                k,
+                v
+            );
             return self;
         }
         self.headers.insert(k, v);
@@ -456,11 +477,20 @@ impl ResponseBuilder {
 
     /// 標準的なセキュリティヘッダーを一括追加
     pub fn security_headers(mut self) -> Self {
-        self.headers.insert("X-Content-Type-Options".to_string(), "nosniff".to_string());
-        self.headers.insert("X-Frame-Options".to_string(), "DENY".to_string());
-        self.headers.insert("X-XSS-Protection".to_string(), "1; mode=block".to_string());
-        self.headers.insert("Referrer-Policy".to_string(), "strict-origin-when-cross-origin".to_string());
-        self.headers.insert("Content-Security-Policy".to_string(), "default-src 'self'".to_string());
+        self.headers
+            .insert("X-Content-Type-Options".to_string(), "nosniff".to_string());
+        self.headers
+            .insert("X-Frame-Options".to_string(), "DENY".to_string());
+        self.headers
+            .insert("X-XSS-Protection".to_string(), "1; mode=block".to_string());
+        self.headers.insert(
+            "Referrer-Policy".to_string(),
+            "strict-origin-when-cross-origin".to_string(),
+        );
+        self.headers.insert(
+            "Content-Security-Policy".to_string(),
+            "default-src 'self'".to_string(),
+        );
         self
     }
 
@@ -468,8 +498,9 @@ impl ResponseBuilder {
     pub fn json<T: Serialize>(mut self, data: &T) -> Result<Self, Error> {
         let json = serde_json::to_vec(data)
             .map_err(|e| Error::ResponseSerializationError(e.to_string()))?;
-        
-        self.headers.insert("Content-Type".to_string(), "application/json".to_string());
+
+        self.headers
+            .insert("Content-Type".to_string(), "application/json".to_string());
         self.body = Some(json);
         Ok(self)
     }
@@ -483,7 +514,10 @@ impl ResponseBuilder {
     /// テキストボディを設定
     pub fn text(mut self, text: impl Into<String>) -> Self {
         let text = text.into();
-        self.headers.insert("Content-Type".to_string(), "text/plain; charset=utf-8".to_string());
+        self.headers.insert(
+            "Content-Type".to_string(),
+            "text/plain; charset=utf-8".to_string(),
+        );
         self.body = Some(text.into_bytes());
         self
     }
@@ -491,7 +525,10 @@ impl ResponseBuilder {
     /// HTMLボディを設定
     pub fn html(mut self, html: impl Into<String>) -> Self {
         let html = html.into();
-        self.headers.insert("Content-Type".to_string(), "text/html; charset=utf-8".to_string());
+        self.headers.insert(
+            "Content-Type".to_string(),
+            "text/html; charset=utf-8".to_string(),
+        );
         self.body = Some(html.into_bytes());
         self
     }
@@ -500,7 +537,11 @@ impl ResponseBuilder {
     pub fn build(mut self) -> Response {
         // build時にも不足があればセキュリティヘッダーを補完
         inject_default_security_headers(&mut self.headers);
-        Response { status: self.status, headers: self.headers, body: self.body }
+        Response {
+            status: self.status,
+            headers: self.headers,
+            body: self.body,
+        }
     }
 }
 

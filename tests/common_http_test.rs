@@ -1,8 +1,8 @@
 // src/common/http.rs のテストを分離した統合テスト
+use runbridge::common::get_max_body_size;
 use runbridge::common::http::{Method, Request, Response, ResponseBuilder, StatusCode};
 use runbridge::error::Error;
-use runbridge::common::get_max_body_size;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[test]
 fn test_method_from_str() {
@@ -30,7 +30,10 @@ fn test_request_builder() {
     assert_eq!(req.query_params.get("key1"), Some(&"value1".to_string()));
     assert_eq!(req.query_params.get("key2"), Some(&"value2".to_string()));
     // Requestヘッダーは小文字キーで保持される
-    assert_eq!(req.headers.get("content-type"), Some(&"application/json".to_string()));
+    assert_eq!(
+        req.headers.get("content-type"),
+        Some(&"application/json".to_string())
+    );
     assert_eq!(req.body.as_ref().unwrap(), &b"test body".to_vec());
 }
 
@@ -41,7 +44,10 @@ fn test_response_builder() {
         .with_body(b"Hello, world!".to_vec());
 
     assert_eq!(res.status, 200);
-    assert_eq!(res.headers.get("Content-Type"), Some(&"text/plain".to_string()));
+    assert_eq!(
+        res.headers.get("Content-Type"),
+        Some(&"text/plain".to_string())
+    );
     assert_eq!(res.body.as_ref().unwrap(), &b"Hello, world!".to_vec());
 }
 
@@ -114,12 +120,15 @@ fn test_response_json() {
     let res = Response::ok().json(&test_data).unwrap();
 
     assert_eq!(res.status, 200);
-    assert_eq!(res.headers.get("Content-Type"), Some(&"application/json".to_string()));
-    
+    assert_eq!(
+        res.headers.get("Content-Type"),
+        Some(&"application/json".to_string())
+    );
+
     // ボディをJSONとしてデコード
     let body_str = String::from_utf8(res.body.unwrap()).unwrap();
     let decoded: TestData = serde_json::from_str(&body_str).unwrap();
-    
+
     assert_eq!(decoded, test_data);
 }
 
@@ -138,7 +147,7 @@ fn test_request_json() {
 
     // JSONデータを取得
     let parsed: TestData = req.json().unwrap();
-    
+
     assert_eq!(parsed, test_data);
 }
 
@@ -156,7 +165,10 @@ fn test_status_code() {
     assert_eq!(StatusCode::Created.reason_phrase(), "Created");
     assert_eq!(StatusCode::BadRequest.reason_phrase(), "Bad Request");
     assert_eq!(StatusCode::Unauthorized.reason_phrase(), "Unauthorized");
-    assert_eq!(StatusCode::InternalServerError.reason_phrase(), "Internal Server Error");
+    assert_eq!(
+        StatusCode::InternalServerError.reason_phrase(),
+        "Internal Server Error"
+    );
 
     // 成功/エラー判定のテスト
     assert!(StatusCode::Ok.is_success());
@@ -175,24 +187,34 @@ fn test_response_builder_methods() {
 
     assert_eq!(response.status, StatusCode::Created.as_u16());
     assert!(response.headers.contains_key("X-Content-Type-Options"));
-    assert_eq!(response.headers.get("X-Test"), Some(&"test-value".to_string()));
-    assert_eq!(response.headers.get("Content-Type"), Some(&"text/plain; charset=utf-8".to_string()));
+    assert_eq!(
+        response.headers.get("X-Test"),
+        Some(&"test-value".to_string())
+    );
+    assert_eq!(
+        response.headers.get("Content-Type"),
+        Some(&"text/plain; charset=utf-8".to_string())
+    );
     assert_eq!(String::from_utf8(response.body.unwrap()).unwrap(), "Hello");
 }
 
 #[test]
 fn test_response_builder_with_json() {
     #[derive(Serialize)]
-    struct TestJson { message: String }
-    
-    let test_json = TestJson { message: "Hi".to_string() };
-    let response = ResponseBuilder::new(200)
-        .json(&test_json)
-        .unwrap()
-        .build();
+    struct TestJson {
+        message: String,
+    }
+
+    let test_json = TestJson {
+        message: "Hi".to_string(),
+    };
+    let response = ResponseBuilder::new(200).json(&test_json).unwrap().build();
 
     assert_eq!(response.status, 200);
-    assert_eq!(response.headers.get("Content-Type"), Some(&"application/json".to_string()));
+    assert_eq!(
+        response.headers.get("Content-Type"),
+        Some(&"application/json".to_string())
+    );
 }
 
 #[test]
@@ -202,7 +224,7 @@ fn test_headers_case_sensitive_in_response() {
         .with_header("Header1", "Value1")
         .with_header("Header2", "Value2")
         .with_header("Header3", "Value3");
-    
+
     assert_eq!(response.headers.get("Header1"), Some(&"Value1".to_string()));
     assert_eq!(response.headers.get("Header2"), Some(&"Value2".to_string()));
     assert_eq!(response.headers.get("Header3"), Some(&"Value3".to_string()));
@@ -218,26 +240,26 @@ fn test_request_clone_without_context() {
     // コンテキストにデータを追加
     req.context_mut().set("user_id", 123u32);
     req.context_mut().set("session", "abc123".to_string());
-    
+
     // コンテキスト有りの状態を確認
     assert!(req.context().contains_key("user_id"));
     assert!(req.context().contains_key("session"));
 
     // コンテキストなしでクローン
     let cloned = req.clone_without_context();
-    
+
     // 基本データは複製されている
     assert_eq!(cloned.method, req.method);
     assert_eq!(cloned.path, req.path);
     assert_eq!(cloned.query_params, req.query_params);
     assert_eq!(cloned.headers, req.headers);
     assert_eq!(cloned.body, req.body);
-    
+
     // コンテキストは空になっている
     assert!(cloned.context().is_empty());
     assert!(!cloned.context().contains_key("user_id"));
     assert!(!cloned.context().contains_key("session"));
-    
+
     // 元のリクエストのコンテキストは保持されている
     assert!(req.context().contains_key("user_id"));
     assert!(req.context().contains_key("session"));
@@ -245,13 +267,13 @@ fn test_request_clone_without_context() {
 
 #[test]
 fn test_decompress_gzip_body_success() {
-    use std::io::Write;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use std::io::Write;
 
     // テスト用のJSONデータを作成
     let original_data = r#"{"message": "Hello, World!", "compressed": true}"#;
-    
+
     // gzipで圧縮
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(original_data.as_bytes()).unwrap();
@@ -264,7 +286,10 @@ fn test_decompress_gzip_body_success() {
         .with_body(compressed_data);
 
     // Content-Encodingヘッダーが存在することを確認
-    assert_eq!(request.headers.get("content-encoding"), Some(&"gzip".to_string()));
+    assert_eq!(
+        request.headers.get("content-encoding"),
+        Some(&"gzip".to_string())
+    );
 
     // gzip解凍を実行
     let result = request.decompress_gzip_body();
@@ -315,9 +340,12 @@ fn test_decompress_gzip_body_different_encoding() {
         String::from_utf8(request.body.unwrap()).unwrap(),
         original_data
     );
-    
+
     // Content-Encodingヘッダーはそのまま
-    assert_eq!(request.headers.get("content-encoding"), Some(&"deflate".to_string()));
+    assert_eq!(
+        request.headers.get("content-encoding"),
+        Some(&"deflate".to_string())
+    );
 }
 
 #[test]
@@ -331,7 +359,7 @@ fn test_decompress_gzip_body_invalid_data() {
     // gzip解凍を実行（無効なgzipデータなのでエラー）
     let result = request.decompress_gzip_body();
     assert!(result.is_err());
-    
+
     if let Err(Error::InvalidRequestBody(msg)) = result {
         assert!(msg.contains("Invalid gzip-encoded request body"));
     } else {
@@ -341,12 +369,12 @@ fn test_decompress_gzip_body_invalid_data() {
 
 #[test]
 fn test_decompress_gzip_body_case_insensitive() {
-    use std::io::Write;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use std::io::Write;
 
     let original_data = "Case insensitive test";
-    
+
     // gzipで圧縮
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(original_data.as_bytes()).unwrap();
@@ -374,21 +402,24 @@ fn test_decompress_gzip_body_case_insensitive() {
 
 #[test]
 fn test_decompress_gzip_body_size_limit_exceeded() {
-    use std::io::Write;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use std::io::Write;
 
     // 大きな解凍後データになる高圧縮率データを作成（1MB の "A" を繰り返し）
     let large_data = "A".repeat(1024 * 1024); // 1MB
-    
+
     // gzipで圧縮（繰り返しデータなので非常に小さくなる）
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(large_data.as_bytes()).unwrap();
     let compressed_data = encoder.finish().unwrap();
 
     // 圧縮後のサイズを確認（デバッグ用）
-    println!("Original size: {} bytes, Compressed size: {} bytes", 
-             large_data.len(), compressed_data.len());
+    println!(
+        "Original size: {} bytes, Compressed size: {} bytes",
+        large_data.len(),
+        compressed_data.len()
+    );
 
     // gzipヘッダー付きのリクエストを作成
     let mut request = Request::new(Method::POST, "/test".to_string())
@@ -398,7 +429,7 @@ fn test_decompress_gzip_body_size_limit_exceeded() {
 
     // gzip解凍を実行（サイズ上限を超えるのでエラーになるはず）
     let result = request.decompress_gzip_body();
-    
+
     // 現在の実装では5MBが上限なので、1MBなら成功するはず
     // 実際に上限超過をテストするため、より大きなデータを作成
     assert!(result.is_ok(), "1MB should be within limits");
@@ -406,13 +437,13 @@ fn test_decompress_gzip_body_size_limit_exceeded() {
 
 #[test]
 fn test_decompress_gzip_body_size_limit_very_large() {
-    use std::io::Write;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use std::io::Write;
 
     // 非常に大きな解凍後データ（10MB）を作成して上限超過をテスト
     let very_large_data = "B".repeat(10 * 1024 * 1024); // 10MB
-    
+
     // gzipで圧縮
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(very_large_data.as_bytes()).unwrap();
@@ -427,7 +458,7 @@ fn test_decompress_gzip_body_size_limit_very_large() {
     // gzip解凍を実行（10MBは5MB上限を超えるのでエラー）
     let result = request.decompress_gzip_body();
     assert!(result.is_err());
-    
+
     if let Err(Error::PayloadTooLarge(msg)) = result {
         assert!(msg.contains("Decompressed body too large"));
     } else {
@@ -435,20 +466,26 @@ fn test_decompress_gzip_body_size_limit_very_large() {
     }
 
     // Content-Encodingヘッダーは残っている（解凍に失敗したため）
-    assert_eq!(request.headers.get("content-encoding"), Some(&"gzip".to_string()));
+    assert_eq!(
+        request.headers.get("content-encoding"),
+        Some(&"gzip".to_string())
+    );
 }
 
 #[test]
 fn test_decompress_gzip_body_incremental_size_check() {
-    use std::io::Write;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use std::io::Write;
 
     // チャンクごとのサイズチェックをテストするため、
     // 複数の大きなブロックから構成されるデータを作成
     let mut large_content = String::new();
     for i in 0..1000 {
-        large_content.push_str(&format!("Block {} with some padding data to make it larger. ", i));
+        large_content.push_str(&format!(
+            "Block {} with some padding data to make it larger. ",
+            i
+        ));
         large_content.push_str(&"X".repeat(1000)); // 各ブロックを1KB程度にする
     }
     // 約1MBのデータ
@@ -470,7 +507,7 @@ fn test_decompress_gzip_body_incremental_size_check() {
     // 解凍されたデータのサイズを確認
     let decompressed_size = request.body.as_ref().unwrap().len();
     assert_eq!(decompressed_size, large_content.len());
-    
+
     // Content-Encodingヘッダーが削除されている
     assert!(request.headers.get("content-encoding").is_none());
 }
@@ -479,14 +516,18 @@ fn test_decompress_gzip_body_incremental_size_check() {
 fn test_gzip_decompression_uses_same_body_size_limit() {
     // get_max_body_size()が正しく使用されていることを確認
     let max_size = get_max_body_size();
-    
+
     // デフォルト値の確認（環境変数がない場合）
     std::env::remove_var("RUNBRIDGE_MAX_BODY_SIZE");
     let default_size = get_max_body_size();
     assert_eq!(default_size, 5 * 1024 * 1024); // 5MB
-    
-    println!("Current max body size: {} bytes ({} MB)", max_size, max_size / (1024 * 1024));
-    
+
+    println!(
+        "Current max body size: {} bytes ({} MB)",
+        max_size,
+        max_size / (1024 * 1024)
+    );
+
     // 実装では同じget_max_body_size()を使用しているので、
     // 通常のボディサイズ制限とgzip解凍後のサイズ制限は同じになる
     assert!(max_size > 0);

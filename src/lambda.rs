@@ -1,37 +1,37 @@
 //! AWS Lambda向けの実装
 
-use std::collections::HashMap;
-use log::{debug, info, warn, error};
-use lambda_runtime::{run, service_fn, Error as LambdaError, LambdaEvent};
+use aws_lambda_events::encodings::Body;
 use aws_lambda_events::event::apigw::{ApiGatewayV2httpRequest, ApiGatewayV2httpResponse};
 use aws_lambda_events::http::header::{HeaderMap, HeaderName, HeaderValue};
-use aws_lambda_events::encodings::Body;
+use lambda_runtime::{run, service_fn, Error as LambdaError, LambdaEvent};
+use log::{error, info, warn};
+use std::collections::HashMap;
 
-use crate::common::{Method, Request, Response, get_max_body_size};
+use crate::common::{get_max_body_size, Method, Request, Response};
 use crate::error::Error as AppError;
 use crate::RunBridge;
 
 // 共有の get_max_body_size を使用（common/utils.rs）
 
+/// API GatewayのHTTPメソッドを共通Methodへ変換
+fn parse_http_method(method: &str) -> Result<Method, AppError> {
+    Method::from_str(method).ok_or_else(|| {
+        warn!("Unsupported HTTP method in Lambda request: {}", method);
+        AppError::InvalidRequestBody(format!("Unsupported HTTP method: {}", method))
+    })
+}
+
 /// API Gateway Proxyリクエストから共通のRequestに変換
 fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Result<Request, AppError> {
     // HTTPメソッドの変換
-    let method = match event.request_context.http.method.as_str() {
-        "GET" => Method::GET,
-        "POST" => Method::POST,
-        "PUT" => Method::PUT,
-        "DELETE" => Method::DELETE,
-        "PATCH" => Method::PATCH,
-        "HEAD" => Method::HEAD,
-        "OPTIONS" => Method::OPTIONS,
-        _ => {
-            debug!("Unknown HTTP method: {}, fallback to GET", event.request_context.http.method);
-            Method::GET
-        }
-    };
+    let method = parse_http_method(event.request_context.http.method.as_str())?;
 
     // パスの取得
-    let path = event.request_context.http.path.unwrap_or_else(|| "/".to_string());
+    let path = event
+        .request_context
+        .http
+        .path
+        .unwrap_or_else(|| "/".to_string());
 
     // クエリパラメータの解析
     let mut query_params = HashMap::new();
@@ -41,7 +41,9 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Result<Request, AppE
     }
 
     // ヘッダーの変換
-    let headers: HashMap<String, String> = event.headers.iter()
+    let headers: HashMap<String, String> = event
+        .headers
+        .iter()
         .filter_map(|(k, v)| {
             if let Ok(v_str) = v.to_str() {
                 // Request取り込み時は小文字キーに正規化
@@ -62,8 +64,7 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Result<Request, AppE
                 if estimated_decoded > max_body_bytes {
                     warn!(
                         "Base64 body too large: estimated {} bytes (limit {})",
-                        estimated_decoded,
-                        max_body_bytes
+                        estimated_decoded, max_body_bytes
                     );
                     return Err(AppError::PayloadTooLarge(format!(
                         "Body too large (>{} bytes)",
@@ -126,7 +127,9 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Result<Request, AppE
 
     // パスパラメータの処理
     for (key, value) in event.path_parameters.iter() {
-        request.query_params.insert(format!("path_{}", key), value.to_string());
+        request
+            .query_params
+            .insert(format!("path_{}", key), value.to_string());
     }
 
     Ok(request)
@@ -151,10 +154,9 @@ fn convert_to_apigw_response(response: Response) -> ApiGatewayV2httpResponse {
     // ヘッダーの変換
     let mut headers = HeaderMap::new();
     for (key, value) in response.headers {
-        if let (Ok(header_name), Ok(header_value)) = (
-            HeaderName::try_from(key),
-            HeaderValue::try_from(value)
-        ) {
+        if let (Ok(header_name), Ok(header_value)) =
+            (HeaderName::try_from(key), HeaderValue::try_from(value))
+        {
             headers.insert(header_name, header_value);
         }
     }
@@ -181,7 +183,7 @@ async fn lambda_handler(
     event: LambdaEvent<ApiGatewayV2httpRequest>,
 ) -> Result<ApiGatewayV2httpResponse, LambdaError> {
     let (event, _context) = event.into_parts();
-    
+
     // リクエストの変換
     let req = match convert_apigw_request(event) {
         Ok(req) => req,
@@ -198,8 +200,7 @@ async fn lambda_handler(
         Some(handler) => handler,
         None => {
             error!("Route not found: {} {}", req.method, req.path);
-            let error_response = Response::not_found()
-                .with_body("Not Found".as_bytes().to_vec());
+            let error_response = Response::not_found().with_body("Not Found".as_bytes().to_vec());
             return Ok(convert_to_apigw_response(error_response));
         }
     };
@@ -219,7 +220,7 @@ async fn lambda_handler(
 
     // ハンドラーの実行
     let handler_result = handler.handle(req_processed).await;
-    
+
     // レスポンスの処理
     let response = match handler_result {
         Ok(res) => res,
@@ -248,19 +249,42 @@ async fn lambda_handler(
 /// アプリケーションをLambda関数として実行
 pub async fn run_lambda(app: RunBridge) -> Result<(), LambdaError> {
     info!("Starting Lambda handler");
-    
+
     let app = std::sync::Arc::new(app);
 
     // サービス関数の定義
     let handler_func = service_fn(move |event| {
         let app_clone = app.clone();
-        async move {
-            lambda_handler(&app_clone, event).await
-        }
+        async move { lambda_handler(&app_clone, event).await }
     });
 
     // Lambda実行ランタイムの起動
     run(handler_func).await?;
-    
+
     Ok(())
-} 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_http_method;
+    use crate::common::Method;
+    use crate::error::Error as AppError;
+
+    #[test]
+    fn parse_http_method_accepts_supported_methods_case_insensitive() {
+        assert_eq!(parse_http_method("GET").unwrap(), Method::GET);
+        assert_eq!(parse_http_method("post").unwrap(), Method::POST);
+        assert_eq!(parse_http_method("Options").unwrap(), Method::OPTIONS);
+    }
+
+    #[test]
+    fn parse_http_method_rejects_unknown_method() {
+        let err = parse_http_method("TRACE").expect_err("TRACE must be rejected");
+        match err {
+            AppError::InvalidRequestBody(message) => {
+                assert!(message.contains("Unsupported HTTP method: TRACE"));
+            }
+            other => panic!("unexpected error variant: {:?}", other),
+        }
+    }
+}

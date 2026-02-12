@@ -22,4 +22,3 @@ impl ResponseWrapper for Response {
         Ok(self)
     }
 }
-

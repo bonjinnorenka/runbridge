@@ -1,15 +1,15 @@
 //! CGIメイン実行ロジック
 
-use std::env;
 use log::{debug, error, info};
+use std::env;
 use tokio::task;
 
-use crate::common::{Method, Request, Response, parse_query_string};
-use crate::error::Error;
-use crate::RunBridge;
+use super::error_logging::{gather_cgi_panic_context, log_error_to_file};
 use super::request::{get_cgi_headers, read_request_body};
 use super::response::write_response;
-use super::error_logging::{log_error_to_file, gather_cgi_panic_context};
+use crate::common::{parse_query_string, Method, Request, Response};
+use crate::error::Error;
+use crate::RunBridge;
 
 /// CGIリクエスト情報をRunBridgeリクエストに変換し、処理を実行する
 pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
@@ -17,20 +17,19 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
     let method_str = env::var("REQUEST_METHOD").map_err(|_| {
         Error::InvalidRequestBody("REQUEST_METHOD environment variable not set".to_string())
     })?;
-    
-    let method = Method::from_str(&method_str).ok_or_else(|| {
-        Error::InvalidRequestBody(format!("Invalid HTTP method: {}", method_str))
-    })?;
-    
+
+    let method = Method::from_str(&method_str)
+        .ok_or_else(|| Error::InvalidRequestBody(format!("Invalid HTTP method: {}", method_str)))?;
+
     let path = env::var("PATH_INFO").unwrap_or_else(|_| "/".to_string());
     let query_string = env::var("QUERY_STRING").unwrap_or_default();
-    
+
     // クエリパラメータを解析
     let query_params = parse_query_string(&query_string);
-    
+
     // ヘッダーを取得
     let headers = get_cgi_headers();
-    
+
     // ボディを読み込む（上限超過時はここで413レスポンスを返す）
     let body = match read_request_body() {
         Ok(b) => b,
@@ -43,7 +42,7 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
         }
         Err(e) => return Err(e),
     };
-    
+
     // リクエストを構築
     let mut request = Request::new(method, path.clone());
     request.query_params = query_params;
@@ -53,7 +52,7 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
         .map(|(k, v)| (k.to_ascii_lowercase(), v))
         .collect();
     request.body = body;
-    
+
     // gzipボディを解凍（必要な場合のみ）
     if let Err(e) = request.decompress_gzip_body() {
         error!("Failed to decompress gzip body in CGI: {}", e);
@@ -61,14 +60,12 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
         write_response(res)?;
         return Ok(());
     }
-    
+
     // リクエストを処理
     debug!("Processing CGI request: {} {}", method, path);
-    
+
     // ハンドラ内でのpanicを検知するためにspawnしてJoinErrorを検査
-    let task_result = task::spawn(async move {
-        process_request(app, request).await
-    }).await;
+    let task_result = task::spawn(async move { process_request(app, request).await }).await;
 
     let response = match task_result {
         // タスクが正常終了し、かつハンドラがResult::Ok/Errを返した場合
@@ -76,7 +73,10 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
             Ok(res) => res,
             Err(err) => {
                 error!("Error processing request: {:?}", err);
-                log_error_to_file(&format!("Handler returned error at {} {}: {:?}", method, path, err));
+                log_error_to_file(&format!(
+                    "Handler returned error at {} {}: {:?}",
+                    method, path, err
+                ));
                 Response::from_error(&err)
             }
         },
@@ -99,10 +99,10 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
                 .with_body("Internal Server Error".as_bytes().to_vec())
         }
     };
-    
+
     // レスポンスを標準出力に書き出す
     write_response(response)?;
-    
+
     info!("CGI request processed successfully");
     Ok(())
 }
@@ -110,19 +110,19 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
 /// リクエストを処理する
 async fn process_request(app: RunBridge, request: Request) -> Result<Response, Error> {
     // ハンドラを検索
-    let handler = app.find_handler(&request.path, &request.method).ok_or_else(|| {
-        Error::RouteNotFound(format!("{} {}", request.method, request.path))
-    })?;
-    
+    let handler = app
+        .find_handler(&request.path, &request.method)
+        .ok_or_else(|| Error::RouteNotFound(format!("{} {}", request.method, request.path)))?;
+
     // ミドルウェアの前処理を適用
     let mut processed_request = request;
     for middleware in app.middlewares() {
         processed_request = middleware.pre_process(processed_request).await?;
     }
-    
+
     // ハンドラでリクエストを処理
     let handler_result = handler.handle(processed_request).await;
-    
+
     // レスポンスの処理
     let mut response = match handler_result {
         Ok(res) => res,
@@ -131,7 +131,7 @@ async fn process_request(app: RunBridge, request: Request) -> Result<Response, E
             return Ok(Response::from_error(&e));
         }
     };
-    
+
     // ミドルウェアの後処理を適用
     for middleware in app.middlewares() {
         match middleware.post_process(response).await {
@@ -142,6 +142,6 @@ async fn process_request(app: RunBridge, request: Request) -> Result<Response, E
             }
         }
     }
-    
+
     Ok(response)
 }

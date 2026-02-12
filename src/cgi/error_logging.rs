@@ -1,30 +1,39 @@
 //! エラーログとセキュリティ関連の機能
 
+use chrono::Local;
+use log::error;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
-use chrono::Local;
-use log::error;
 
 /// エラー内容をログファイルに追記する
 pub fn log_error_to_file(message: &str) {
     let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f UTC");
     let local_time = Local::now().format("%Y-%m-%d %H:%M:%S%.3f %Z");
-    
+
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
         .open("runbridge_error.log")
     {
         // より視認性の良いログフォーマット
-        let _ = writeln!(file, "================================================================================");
+        let _ = writeln!(
+            file,
+            "================================================================================"
+        );
         let _ = writeln!(file, "RUNBRIDGE CGI ERROR");
         let _ = writeln!(file, "Timestamp (UTC): {}", timestamp);
         let _ = writeln!(file, "Timestamp (Local): {}", local_time);
         let _ = writeln!(file, "Process ID: {}", std::process::id());
-        let _ = writeln!(file, "--------------------------------------------------------------------------------");
+        let _ = writeln!(
+            file,
+            "--------------------------------------------------------------------------------"
+        );
         let _ = writeln!(file, "{}", message);
-        let _ = writeln!(file, "================================================================================");
+        let _ = writeln!(
+            file,
+            "================================================================================"
+        );
         let _ = writeln!(file);
     }
 }
@@ -39,7 +48,7 @@ pub fn gather_cgi_panic_context(method: &str, path: &str) -> String {
     // 基本的なCGI環境変数
     let basic_vars = [
         "QUERY_STRING",
-        "CONTENT_TYPE", 
+        "CONTENT_TYPE",
         "CONTENT_LENGTH",
         "SERVER_PROTOCOL",
         "SERVER_NAME",
@@ -131,10 +140,14 @@ pub fn is_sensitive_key_like(lower_key: &str) -> bool {
 }
 
 pub fn redact_query_string(qs: &str) -> String {
-    if qs.is_empty() { return qs.to_string(); }
+    if qs.is_empty() {
+        return qs.to_string();
+    }
     let mut out_parts = Vec::new();
     for part in qs.split('&') {
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         let mut it = part.splitn(2, '=');
         let k = it.next().unwrap_or("");
         let v = it.next().unwrap_or("");

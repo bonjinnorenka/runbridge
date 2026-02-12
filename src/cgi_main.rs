@@ -16,21 +16,21 @@ async fn main() {
     env_logger::Builder::from_env(Env::default().default_filter_or("info"))
         .target(env_logger::Target::Stderr)
         .init();
-    
+
     info!("Starting RunBridge CGI application");
-    
+
     // アプリケーションの構築
     let app = RunBridge::builder()
         .handler(sample_handler::HelloHandler::new())
         .handler(sample_handler::EchoHandler::new())
         .handler(sample_handler::PanicHandler::new())
         .build();
-    
+
     // CGI処理の実行
     if let Err(err) = cgi::run_cgi(app).await {
         error!("Error running CGI application: {:?}", err);
         std::process::exit(1);
     }
-    
+
     info!("CGI request processed successfully");
-} 
+}

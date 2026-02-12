@@ -1,10 +1,10 @@
 //! HTTPクッキー関連の実装
 
+use super::utils::{is_header_value_valid, validate_cookie_name_value};
+use crate::error::Error;
+use chrono::{DateTime, Utc};
 use std::fmt;
 use std::time::Duration;
-use chrono::{DateTime, Utc};
-use crate::error::Error;
-use super::utils::{validate_cookie_name_value, is_header_value_valid};
 
 /// SameSite属性
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +46,10 @@ impl Cookie {
         match Self::try_new(name, value) {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("Cookie::new received invalid name/value: {}. Replaced with safe defaults", e);
+                log::warn!(
+                    "Cookie::new received invalid name/value: {}. Replaced with safe defaults",
+                    e
+                );
                 Self {
                     name: "invalid".to_string(),
                     value: "".to_string(),
@@ -130,7 +133,10 @@ impl Cookie {
             if is_header_value_valid(path) {
                 cookie_str.push_str(&format!("; Path={}", path));
             } else {
-                log::warn!("Cookie::to_header_value skipped invalid Path value: {:?}", path);
+                log::warn!(
+                    "Cookie::to_header_value skipped invalid Path value: {:?}",
+                    path
+                );
             }
         }
 
@@ -138,12 +144,18 @@ impl Cookie {
             if is_header_value_valid(domain) {
                 cookie_str.push_str(&format!("; Domain={}", domain));
             } else {
-                log::warn!("Cookie::to_header_value skipped invalid Domain value: {:?}", domain);
+                log::warn!(
+                    "Cookie::to_header_value skipped invalid Domain value: {:?}",
+                    domain
+                );
             }
         }
 
         if let Some(expires) = &self.expires {
-            cookie_str.push_str(&format!("; Expires={}", expires.format("%a, %d %b %Y %H:%M:%S GMT")));
+            cookie_str.push_str(&format!(
+                "; Expires={}",
+                expires.format("%a, %d %b %Y %H:%M:%S GMT")
+            ));
         }
 
         if let Some(max_age) = &self.max_age {
@@ -173,7 +185,7 @@ mod tests {
     #[test]
     fn test_cookie_basic() {
         let cookie = Cookie::new("session_id", "abc123");
-        
+
         assert_eq!(cookie.name, "session_id");
         assert_eq!(cookie.value, "abc123");
         assert_eq!(cookie.path, None);
@@ -209,7 +221,7 @@ mod tests {
             .with_same_site(SameSite::Lax);
 
         let header_value = cookie.to_header_value();
-        
+
         assert!(header_value.contains("test=value"));
         assert!(header_value.contains("Path=/app"));
         assert!(header_value.contains("Domain=test.com"));
@@ -221,10 +233,9 @@ mod tests {
     #[test]
     fn test_cookie_with_expires() {
         use chrono::{TimeZone, Utc};
-        
+
         let expires = Utc.with_ymd_and_hms(2024, 12, 31, 23, 59, 59).unwrap();
-        let cookie = Cookie::new("expires_test", "value")
-            .with_expires(expires);
+        let cookie = Cookie::new("expires_test", "value").with_expires(expires);
 
         let header_value = cookie.to_header_value();
         assert!(header_value.contains("Expires=Tue, 31 Dec 2024 23:59:59 GMT"));
@@ -233,8 +244,7 @@ mod tests {
     #[test]
     fn test_cookie_with_max_age() {
         let max_age = Duration::from_secs(3600); // 1 hour
-        let cookie = Cookie::new("max_age_test", "value")
-            .with_max_age(max_age);
+        let cookie = Cookie::new("max_age_test", "value").with_max_age(max_age);
 
         let header_value = cookie.to_header_value();
         assert!(header_value.contains("Max-Age=3600"));

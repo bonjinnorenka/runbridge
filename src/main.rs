@@ -1,9 +1,9 @@
 use env_logger;
 use log::info;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::env;
 
-use runbridge::{RunBridge, common::Request, handler, error::Error};
+use runbridge::{common::Request, error::Error, handler, RunBridge};
 
 /// サンプルのアイテム型
 #[derive(Serialize, Deserialize)]
@@ -50,7 +50,7 @@ fn get_items(_req: Request) -> Result<ItemList, Error> {
 fn create_item(_req: Request, item: Item) -> Result<Item, Error> {
     // 実際のアプリケーションではデータベースに保存する処理が入る
     info!("Creating new item: {}", item.name);
-    
+
     Ok(item)
 }
 
@@ -70,7 +70,7 @@ async fn main() {
             .handler(handler::get("^/items$", get_items))
             .handler(handler::post("^/items$", create_item))
             .build();
-            
+
         if let Err(e) = runbridge::lambda::run_lambda(app).await {
             eprintln!("Lambda error: {}", e);
             std::process::exit(1);
@@ -79,7 +79,10 @@ async fn main() {
 
     #[cfg(feature = "cloud_run")]
     {
-        let port = match env::var("PORT").unwrap_or_else(|_| "8080".to_string()).parse::<u16>() {
+        let port = match env::var("PORT")
+            .unwrap_or_else(|_| "8080".to_string())
+            .parse::<u16>()
+        {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Error parsing port: {}", e);
@@ -88,13 +91,13 @@ async fn main() {
         };
         let host = "0.0.0.0";
         info!("Running as HTTP server on port {}", port);
-        
+
         let app = RunBridge::builder()
             .handler(handler::get("^/$", health_handler))
             .handler(handler::get("^/items$", get_items))
             .handler(handler::post("^/items$", create_item))
             .build();
-            
+
         if let Err(e) = runbridge::cloudrun::run_cloud_run(app, host, port).await {
             eprintln!("Cloud Run error: {}", e);
             std::process::exit(1);

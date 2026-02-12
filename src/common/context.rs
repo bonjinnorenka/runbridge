@@ -1,7 +1,7 @@
 //! リクエストコンテキストの実装
 
-use std::collections::HashMap;
 use std::any::Any;
+use std::collections::HashMap;
 
 /// リクエストコンテキスト（ミドルウェア間でのデータ共有）
 #[derive(Debug, Default)]
@@ -88,7 +88,10 @@ mod tests {
         context.set("int_val", 42i32);
         context.set("bool_val", true);
 
-        assert_eq!(context.get::<String>("string_val"), Some(&"hello".to_string()));
+        assert_eq!(
+            context.get::<String>("string_val"),
+            Some(&"hello".to_string())
+        );
         assert_eq!(context.get::<i32>("int_val"), Some(&42));
         assert_eq!(context.get::<bool>("bool_val"), Some(&true));
 
@@ -102,7 +105,7 @@ mod tests {
     #[test]
     fn test_request_context_contains_and_keys() {
         let mut context = RequestContext::new();
-        
+
         assert!(context.is_empty());
         assert!(!context.contains_key("test"));
 
@@ -123,7 +126,7 @@ mod tests {
     #[test]
     fn test_request_context_remove() {
         let mut context = RequestContext::new();
-        
+
         context.set("removable", "test_value".to_string());
         assert!(context.contains_key("removable"));
 
@@ -139,7 +142,7 @@ mod tests {
     #[test]
     fn test_request_context_clear() {
         let mut context = RequestContext::new();
-        
+
         context.set("key1", "value1".to_string());
         context.set("key2", 42);
         assert!(!context.is_empty());
@@ -159,8 +162,11 @@ mod tests {
     #[test]
     fn test_request_context_custom_types() {
         let mut context = RequestContext::new();
-        
-        let user = UserInfo { id: 42, name: "Alice".to_string() };
+
+        let user = UserInfo {
+            id: 42,
+            name: "Alice".to_string(),
+        };
         context.set("user", user.clone());
 
         let retrieved_user = context.get::<UserInfo>("user");

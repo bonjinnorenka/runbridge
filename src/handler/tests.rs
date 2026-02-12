@@ -65,12 +65,10 @@ fn test_custom_header_handler(_req: Request) -> Result<Response, Error> {
         value: 123,
     };
 
-    Ok(
-        Response::ok()
-            .with_header("X-Custom-Header", "CustomValue")
-            .with_header("X-API-Version", "1.0")
-            .json(&response_data)?,
-    )
+    Ok(Response::ok()
+        .with_header("X-Custom-Header", "CustomValue")
+        .with_header("X-API-Version", "1.0")
+        .json(&response_data)?)
 }
 
 // 非同期でカスタムヘッダーを返すハンドラー
@@ -80,12 +78,10 @@ async fn test_async_custom_header_handler(_req: Request) -> Result<Response, Err
         value: 456,
     };
 
-    Ok(
-        Response::ok()
-            .with_header("X-Custom-Header", "AsyncValue")
-            .with_header("X-API-Version", "2.0")
-            .json(&response_data)?,
-    )
+    Ok(Response::ok()
+        .with_header("X-Custom-Header", "AsyncValue")
+        .with_header("X-API-Version", "2.0")
+        .json(&response_data)?)
 }
 
 #[tokio::test]
@@ -294,10 +290,14 @@ async fn test_invalid_regex_pattern_fail_closed() {
 #[tokio::test]
 async fn test_empty_pattern_rejection() {
     // 空のパターンでtry_newを使った場合のエラーハンドリングをテスト
-    let result = RouteHandler::try_new(Method::GET, "", move |req, _: Option<()>| test_get_handler(req));
+    let result = RouteHandler::try_new(Method::GET, "", move |req, _: Option<()>| {
+        test_get_handler(req)
+    });
     assert!(result.is_err());
 
-    let result = AsyncRouteHandler::try_new(Method::GET, "", move |req, _: Option<()>| test_async_get_handler(req));
+    let result = AsyncRouteHandler::try_new(Method::GET, "", move |req, _: Option<()>| {
+        test_async_get_handler(req)
+    });
     assert!(result.is_err());
 }
 

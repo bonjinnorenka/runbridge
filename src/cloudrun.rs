@@ -1,35 +1,31 @@
 //! Google Cloud Run向けの実装
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use log::{error, info, warn};
-use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use actix_web::http::header::HeaderMap;
 use actix_web::web::Bytes;
+use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
+use log::{error, info, warn};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::common::{Method, Request, Response, parse_query_string, get_max_body_size};
+use crate::common::{get_max_body_size, parse_query_string, Method, Request, Response};
 use crate::RunBridge;
 
 /// actix-webのHeaderMapから共通形式のヘッダーに変換
 fn convert_headers(headers: &HeaderMap) -> HashMap<String, String> {
     let mut result = HashMap::new();
-    
+
     for (key, value) in headers.iter() {
         if let Ok(value_str) = value.to_str() {
             // Request取り込み時は小文字キーに正規化
             result.insert(key.as_str().to_ascii_lowercase(), value_str.to_string());
         }
     }
-    
+
     result
 }
 
 /// actix-webのリクエストから共通形式のRequestに変換
-async fn convert_request(
-    req: &HttpRequest,
-    path: String,
-    body: Option<Bytes>,
-) -> Request {
+async fn convert_request(req: &HttpRequest, path: String, body: Option<Bytes>) -> Request {
     // HTTPメソッドの取得
     let method = match req.method().as_str() {
         "GET" => Method::GET,
@@ -55,12 +51,12 @@ async fn convert_request(
     request.query_params = query_params;
     request.headers = headers;
     request.body = body;
-    
+
     // gzipボディを解凍（必要な場合のみ）
     if let Err(e) = request.decompress_gzip_body() {
         warn!("Failed to decompress gzip body in Cloud Run: {}", e);
     }
-    
+
     request
 }
 
@@ -75,7 +71,10 @@ fn convert_to_http_response(response: Response) -> HttpResponse {
         403 => HttpResponse::Forbidden(),
         404 => HttpResponse::NotFound(),
         500 => HttpResponse::InternalServerError(),
-        _ => HttpResponse::build(actix_web::http::StatusCode::from_u16(response.status).unwrap_or(actix_web::http::StatusCode::OK)),
+        _ => HttpResponse::build(
+            actix_web::http::StatusCode::from_u16(response.status)
+                .unwrap_or(actix_web::http::StatusCode::OK),
+        ),
     };
 
     // ヘッダーの設定
@@ -93,7 +92,7 @@ fn convert_to_http_response(response: Response) -> HttpResponse {
 
 /// RunBridgeアプリケーションをハンドリングするactix-web用ハンドラー
 async fn handle_request(
-    req: HttpRequest, 
+    req: HttpRequest,
     body: Option<Bytes>,
     app: web::Data<Arc<RunBridge>>,
 ) -> HttpResponse {
@@ -118,8 +117,9 @@ async fn handle_request(
         Some(handler) => handler,
         None => {
             error!("Route not found: {} {}", request.method, path);
-            return convert_to_http_response(Response::not_found()
-                .with_body("Not Found".as_bytes().to_vec()));
+            return convert_to_http_response(
+                Response::not_found().with_body("Not Found".as_bytes().to_vec()),
+            );
         }
     };
 
@@ -166,36 +166,59 @@ async fn handle_request(
 /// アプリケーションをCloud Run/HTTPサーバーとして実行
 pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Result<()> {
     info!("Starting HTTP server on {}:{}", host, port);
-    
+
     // アプリケーションをArcで包んでスレッド間で共有可能にする
     let app_data = Arc::new(app);
     let max_body = get_max_body_size();
-    
+
     // HTTPサーバーの構築と起動
     HttpServer::new(move || {
         let app_data = web::Data::new(app_data.clone());
-        
+
         App::new()
             .app_data(app_data.clone())
             // リクエストボディサイズの上限（共通設定）
             .app_data(web::PayloadConfig::new(max_body))
             // すべてのリクエストをキャッチする汎用ハンドラー
-            .route("/{path:.*}", web::get().to(|req, app: web::Data<Arc<RunBridge>>| 
-                handle_request(req, None, app)))
-            .route("/{path:.*}", web::post().to(|req, body: Option<Bytes>, app: web::Data<Arc<RunBridge>>| 
-                handle_request(req, body, app)))
-            .route("/{path:.*}", web::put().to(|req, body: Option<Bytes>, app: web::Data<Arc<RunBridge>>| 
-                handle_request(req, body, app)))
-            .route("/{path:.*}", web::delete().to(|req, app: web::Data<Arc<RunBridge>>| 
-                handle_request(req, None, app)))
-            .route("/{path:.*}", web::patch().to(|req, body: Option<Bytes>, app: web::Data<Arc<RunBridge>>| 
-                handle_request(req, body, app)))
-            .route("/{path:.*}", web::head().to(|req, app: web::Data<Arc<RunBridge>>| 
-                handle_request(req, None, app)))
-            .route("/{path:.*}", web::method(actix_web::http::Method::OPTIONS).to(|req, app: web::Data<Arc<RunBridge>>| 
-                handle_request(req, None, app)))
+            .route(
+                "/{path:.*}",
+                web::get().to(|req, app: web::Data<Arc<RunBridge>>| handle_request(req, None, app)),
+            )
+            .route(
+                "/{path:.*}",
+                web::post().to(|req, body: Option<Bytes>, app: web::Data<Arc<RunBridge>>| {
+                    handle_request(req, body, app)
+                }),
+            )
+            .route(
+                "/{path:.*}",
+                web::put().to(|req, body: Option<Bytes>, app: web::Data<Arc<RunBridge>>| {
+                    handle_request(req, body, app)
+                }),
+            )
+            .route(
+                "/{path:.*}",
+                web::delete()
+                    .to(|req, app: web::Data<Arc<RunBridge>>| handle_request(req, None, app)),
+            )
+            .route(
+                "/{path:.*}",
+                web::patch().to(|req, body: Option<Bytes>, app: web::Data<Arc<RunBridge>>| {
+                    handle_request(req, body, app)
+                }),
+            )
+            .route(
+                "/{path:.*}",
+                web::head()
+                    .to(|req, app: web::Data<Arc<RunBridge>>| handle_request(req, None, app)),
+            )
+            .route(
+                "/{path:.*}",
+                web::method(actix_web::http::Method::OPTIONS)
+                    .to(|req, app: web::Data<Arc<RunBridge>>| handle_request(req, None, app)),
+            )
     })
     .bind((host, port))?
     .run()
     .await
-} 
+}

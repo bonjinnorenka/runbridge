@@ -93,9 +93,9 @@ impl RunBridgeBuilder {
     }
 
     /// ハンドラを追加
-    pub fn handler<H>(mut self, handler: H) -> Self 
-    where 
-        H: common::Handler + 'static
+    pub fn handler<H>(mut self, handler: H) -> Self
+    where
+        H: common::Handler + 'static,
     {
         self.handlers.push(Box::new(handler));
         // ハンドラーを追加するたびにパスの `/` の数で降順ソート
@@ -111,7 +111,7 @@ impl RunBridgeBuilder {
     /// ミドルウェアを追加
     pub fn middleware<M>(mut self, middleware: M) -> Self
     where
-        M: common::Middleware + 'static
+        M: common::Middleware + 'static,
     {
         self.middlewares.push(Box::new(middleware));
         self
@@ -139,12 +139,18 @@ impl RunBridge {
     }
 
     /// 指定されたパスにマッチするハンドラを取得
-    pub fn find_handler(&self, path: &str, method: &common::Method) -> Option<&Box<dyn common::Handler>> {
-        self.handlers.iter().find(|handler| handler.matches(path, method))
+    pub fn find_handler(
+        &self,
+        path: &str,
+        method: &common::Method,
+    ) -> Option<&Box<dyn common::Handler>> {
+        self.handlers
+            .iter()
+            .find(|handler| handler.matches(path, method))
     }
 
     /// ミドルウェアのリストを取得
     pub fn middlewares(&self) -> &[Box<dyn common::Middleware>] {
         &self.middlewares
     }
-} 
+}
