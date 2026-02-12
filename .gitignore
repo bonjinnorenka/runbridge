@@ -1,3 +1,4 @@
 target
 *.log
+runbridge_error.log
 SECURITY*.md
