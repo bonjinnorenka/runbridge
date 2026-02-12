@@ -4,7 +4,7 @@
 //!
 //! CGI環境のシミュレーションを行い、実際のリクエスト処理をテストします。
 
-use std::io::{self, Write};
+use std::io::Write;
 use std::process::{Command, Stdio};
 use temp_env::with_vars;
 
@@ -111,6 +111,34 @@ fn test_cgi_not_found() {
     
     // ステータスコードが404であることを確認
     assert!(stdout.contains("Status: 404 Not Found"));
+    // 固定文言のみ返し、内部詳細は露出しないことを確認
+    assert!(stdout.contains("Not Found"));
+    assert!(!stdout.contains("Not Found:"));
+    assert!(!stdout.contains("/not-exists"));
+}
+
+#[test]
+fn test_cgi_invalid_gzip_returns_fixed_message() {
+    let invalid_gzip_body = b"not a valid gzip stream";
+
+    let output = run_cgi_with_env(
+        vec![
+            ("REQUEST_METHOD", Some("POST")),
+            ("PATH_INFO", Some("/echo")),
+            ("QUERY_STRING", Some("")),
+            ("CONTENT_LENGTH", Some(&invalid_gzip_body.len().to_string())),
+            ("HTTP_CONTENT_ENCODING", Some("gzip")),
+        ],
+        invalid_gzip_body,
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("Status: 400 Bad Request"));
+    assert!(stdout.contains("Content-Type: text/plain"));
+    assert!(stdout.contains("Bad Request"));
+    assert!(!stdout.contains("Bad Request:"));
+    assert!(!stdout.contains("Invalid gzip-encoded request body"));
 }
 
 #[test]

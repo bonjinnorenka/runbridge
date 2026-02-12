@@ -211,9 +211,7 @@ async fn lambda_handler(
             Ok(processed) => req_processed = processed,
             Err(e) => {
                 error!("Middleware error: {}", e);
-                let status = e.status_code();
-                let error_response = Response::new(status)
-                    .with_body(format!("Error: {}", e).as_bytes().to_vec());
+                let error_response = Response::from_error(&e);
                 return Ok(convert_to_apigw_response(error_response));
             }
         }

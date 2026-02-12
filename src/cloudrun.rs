@@ -130,9 +130,7 @@ async fn handle_request(
             Ok(processed) => req_processed = processed,
             Err(e) => {
                 error!("Middleware error: {}", e);
-                let status = e.status_code();
-                return convert_to_http_response(Response::new(status)
-                    .with_body(format!("Error: {}", e).as_bytes().to_vec()));
+                return convert_to_http_response(Response::from_error(&e));
             }
         }
     }

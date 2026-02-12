@@ -57,9 +57,7 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
     // gzipボディを解凍（必要な場合のみ）
     if let Err(e) = request.decompress_gzip_body() {
         error!("Failed to decompress gzip body in CGI: {}", e);
-        let res = Response::new(400)
-            .with_header("Content-Type", "text/plain")
-            .with_body(format!("Bad Request: {}", e).as_bytes().to_vec());
+        let res = Response::from_error(&e);
         write_response(res)?;
         return Ok(());
     }
@@ -79,16 +77,7 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
             Err(err) => {
                 error!("Error processing request: {:?}", err);
                 log_error_to_file(&format!("Handler returned error at {} {}: {:?}", method, path, err));
-                match err {
-                    Error::RouteNotFound(msg) => {
-                        Response::not_found()
-                            .with_header("Content-Type", "text/plain")
-                            .with_body(format!("Not Found: {}", msg).into_bytes())
-                    }
-                    _ => Response::internal_server_error()
-                        .with_header("Content-Type", "text/plain")
-                        .with_body(format!("Internal Server Error: {}", err).into_bytes())
-                }
+                Response::from_error(&err)
             }
         },
         // タスクがpanicした場合

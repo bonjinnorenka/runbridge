@@ -78,6 +78,26 @@ fn test_from_error_payload_too_large() {
     assert_eq!(body, "Payload Too Large");
 }
 
+#[test]
+fn test_from_error_internal_server_error_hides_details() {
+    let err = Error::InternalServerError("db password=secret".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 500);
+    let body = String::from_utf8(res.body.unwrap()).unwrap();
+    assert_eq!(body, "Internal Server Error");
+    assert!(!body.contains("secret"));
+}
+
+#[test]
+fn test_from_error_not_found_hides_details() {
+    let err = Error::RouteNotFound("GET /admin/internal".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 404);
+    let body = String::from_utf8(res.body.unwrap()).unwrap();
+    assert_eq!(body, "Not Found");
+    assert!(!body.contains("/admin/internal"));
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct TestData {
     name: String,
@@ -471,4 +491,3 @@ fn test_gzip_decompression_uses_same_body_size_limit() {
     // 通常のボディサイズ制限とgzip解凍後のサイズ制限は同じになる
     assert!(max_size > 0);
 }
-
