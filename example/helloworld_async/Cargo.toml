@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 runbridge = { path = "../..", default-features = false, features = [] }
-env_logger = "0.10.0"
+env_logger = "0.11"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] } 
 futures = "0.3"

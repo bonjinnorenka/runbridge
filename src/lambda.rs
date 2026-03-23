@@ -3,6 +3,7 @@
 use aws_lambda_events::encodings::Body;
 use aws_lambda_events::event::apigw::{ApiGatewayV2httpRequest, ApiGatewayV2httpResponse};
 use aws_lambda_events::http::header::{HeaderMap, HeaderName, HeaderValue};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use lambda_runtime::{run, service_fn, Error as LambdaError, LambdaEvent};
 use log::{error, info, warn};
 use std::collections::HashMap;
@@ -72,7 +73,7 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Result<Request, AppE
                     )));
                 }
 
-                match base64::decode(&body_str) {
+                match STANDARD.decode(body_str.as_bytes()) {
                     Ok(bytes) => {
                         if bytes.len() > max_body_bytes {
                             warn!(
@@ -144,7 +145,7 @@ fn convert_to_apigw_response(response: Response) -> ApiGatewayV2httpResponse {
             Ok(text) => (Some(text), false),
             Err(_) => {
                 // バイナリデータの場合はBase64エンコード
-                (Some(base64::encode(&body)), true)
+                (Some(STANDARD.encode(&body)), true)
             }
         }
     } else {
@@ -172,7 +173,7 @@ fn convert_to_apigw_response(response: Response) -> ApiGatewayV2httpResponse {
         headers,
         multi_value_headers,
         body,
-        is_base64_encoded: is_base64_encoded,
+        is_base64_encoded,
         cookies: Vec::new(),
     }
 }
