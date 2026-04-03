@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Number, Value};
 
 use crate::common::{Cookie, HeaderMap, Method, QueryMap, Request, RequestContext, Response};
 
@@ -153,23 +152,10 @@ where
     type Rejection = ExtractError;
 
     async fn from_request_parts(parts: &RequestParts<'_>) -> Result<Self, Self::Rejection> {
-        let mut grouped: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-
-        for (key, value) in &parts.query.to_owned_pairs() {
-            grouped
-                .entry(key.clone())
-                .or_default()
-                .push(value.clone());
-        }
-
-        let mut map = Map::new();
-        for (key, values) in grouped {
-            map.insert(key, value_from_strings(values));
-        }
-
-        let value =
-            serde_json::from_value(Value::Object(map)).map_err(|err| ExtractError::bad_request(err.to_string()))?;
+        let encoded = serde_urlencoded::to_string(parts.query.to_owned_pairs())
+            .map_err(|err| ExtractError::bad_request(err.to_string()))?;
+        let value = serde_html_form::from_str(&encoded)
+            .map_err(|err| ExtractError::bad_request(err.to_string()))?;
         Ok(Self(value))
     }
 }
@@ -247,34 +233,4 @@ where
             .map_err(|err| ExtractError::bad_request(err.to_string()))?;
         Ok(Self(value))
     }
-}
-
-fn value_from_strings(values: Vec<String>) -> Value {
-    if values.len() == 1 {
-        scalar_value(&values[0])
-    } else {
-        Value::Array(values.into_iter().map(|value| scalar_value(&value)).collect())
-    }
-}
-
-fn scalar_value(value: &str) -> Value {
-    if let Ok(boolean) = value.parse::<bool>() {
-        return Value::Bool(boolean);
-    }
-
-    if let Ok(int_value) = value.parse::<i64>() {
-        return Value::Number(Number::from(int_value));
-    }
-
-    if let Ok(uint_value) = value.parse::<u64>() {
-        return Value::Number(Number::from(uint_value));
-    }
-
-    if let Ok(float_value) = value.parse::<f64>() {
-        if let Some(number) = Number::from_f64(float_value) {
-            return Value::Number(number);
-        }
-    }
-
-    Value::String(value.to_string())
 }

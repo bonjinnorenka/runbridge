@@ -1,4 +1,3 @@
-use env_logger;
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::env;

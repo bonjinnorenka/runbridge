@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::common::{percent_decode, Handler, Method, Request, Response};
+use crate::common::utils::percent_decode_path_segment;
+use crate::common::{Handler, Method, Request, Response};
 use crate::error::Error;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + 'static>>;
@@ -90,9 +91,7 @@ impl PathPattern {
                     }
                     let name = &segment[1..segment.len() - 1];
                     if name.is_empty()
-                        || !name
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                     {
                         return Err(Error::ConfigurationError(format!(
                             "invalid path parameter name: {}",
@@ -110,10 +109,12 @@ impl PathPattern {
                     )));
                 }
 
-                if segment
-                    .chars()
-                    .any(|c| matches!(c, '^' | '$' | '+' | '*' | '?' | '[' | ']' | '(' | ')' | '|' | '\\'))
-                {
+                if segment.chars().any(|c| {
+                    matches!(
+                        c,
+                        '^' | '$' | '+' | '*' | '?' | '[' | ']' | '(' | ')' | '|' | '\\'
+                    )
+                }) {
                     return Err(Error::ConfigurationError(format!(
                         "regex-style route templates are not supported: {}",
                         template
@@ -168,7 +169,7 @@ impl PathPattern {
                     }
                 }
                 PathSegment::Param(name) => {
-                    params.insert(name.clone(), percent_decode(actual_segment));
+                    params.insert(name.clone(), percent_decode_path_segment(actual_segment));
                 }
             }
         }
@@ -232,7 +233,10 @@ impl Route {
     }
 
     pub(crate) fn path_score(&self) -> (usize, usize) {
-        (self.pattern.static_segment_count(), self.pattern.segment_count())
+        (
+            self.pattern.static_segment_count(),
+            self.pattern.segment_count(),
+        )
     }
 }
 

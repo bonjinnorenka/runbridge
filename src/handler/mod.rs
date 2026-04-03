@@ -11,7 +11,9 @@ pub use builders::{
     fallback, get, options, post, put, try_async_get, try_get,
 };
 pub use core::{route, try_route, Route, RouteMatch};
-pub use extractors::{ExtractError, FromRequest, FromRequestParts, Json, Path, Query, RequestParts, State};
+pub use extractors::{
+    ExtractError, FromRequest, FromRequestParts, Json, Path, Query, RequestParts, State,
+};
 pub use response::IntoResponse;
 
 #[cfg(test)]

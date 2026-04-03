@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
+use std::str::FromStr;
 
 /// HTTPステータスコード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,17 +100,21 @@ impl Method {
         Method::HEAD,
         Method::OPTIONS,
     ];
+}
 
-    pub fn from_str(method: &str) -> Option<Self> {
-        match method.to_uppercase().as_str() {
-            "GET" => Some(Method::GET),
-            "POST" => Some(Method::POST),
-            "PUT" => Some(Method::PUT),
-            "DELETE" => Some(Method::DELETE),
-            "PATCH" => Some(Method::PATCH),
-            "HEAD" => Some(Method::HEAD),
-            "OPTIONS" => Some(Method::OPTIONS),
-            _ => None,
+impl FromStr for Method {
+    type Err = ();
+
+    fn from_str(method: &str) -> Result<Self, Self::Err> {
+        match method.to_ascii_uppercase().as_str() {
+            "GET" => Ok(Method::GET),
+            "POST" => Ok(Method::POST),
+            "PUT" => Ok(Method::PUT),
+            "DELETE" => Ok(Method::DELETE),
+            "PATCH" => Ok(Method::PATCH),
+            "HEAD" => Ok(Method::HEAD),
+            "OPTIONS" => Ok(Method::OPTIONS),
+            _ => Err(()),
         }
     }
 }
@@ -135,7 +140,9 @@ struct MultiMap {
 
 impl MultiMap {
     fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     fn insert_case_sensitive(&mut self, key: impl Into<String>, value: impl Into<String>) {

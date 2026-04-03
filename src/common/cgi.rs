@@ -20,8 +20,8 @@ pub mod utils {
         let mut headers = HeaderMap::new();
 
         for (key, value) in env::vars() {
-            if key.starts_with("HTTP_") {
-                let header_name = key[5..].replace('_', "-").to_lowercase();
+            if let Some(stripped) = key.strip_prefix("HTTP_") {
+                let header_name = stripped.replace('_', "-").to_lowercase();
                 headers.append(header_name, value);
             }
         }
@@ -86,6 +86,8 @@ mod tests {
         set_cookie(&mut response, cookie);
 
         assert_eq!(response.cookies.len(), 1);
-        assert!(response.cookies[0].to_header_value().contains("test_cookie=test_value"));
+        assert!(response.cookies[0]
+            .to_header_value()
+            .contains("test_cookie=test_value"));
     }
 }

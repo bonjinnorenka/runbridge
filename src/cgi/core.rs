@@ -2,6 +2,7 @@
 
 use log::{debug, error, info};
 use std::env;
+use std::str::FromStr;
 use tokio::task;
 
 use super::error_logging::{gather_cgi_panic_context, log_error_to_file};
@@ -17,7 +18,7 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
     })?;
 
     let method = Method::from_str(&method_str)
-        .ok_or_else(|| Error::InvalidRequestBody(format!("Invalid HTTP method: {}", method_str)))?;
+        .map_err(|_| Error::InvalidRequestBody(format!("Invalid HTTP method: {}", method_str)))?;
 
     let path = env::var("PATH_INFO").unwrap_or_else(|_| "/".to_string());
     let query_string = env::var("QUERY_STRING").unwrap_or_default();

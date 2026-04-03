@@ -5,18 +5,19 @@ use runbridge::common::http::{
 use runbridge::common::Cookie;
 use runbridge::error::Error;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 #[test]
 fn test_method_from_str() {
-    assert_eq!(Method::from_str("GET"), Some(Method::GET));
-    assert_eq!(Method::from_str("get"), Some(Method::GET));
-    assert_eq!(Method::from_str("POST"), Some(Method::POST));
-    assert_eq!(Method::from_str("PUT"), Some(Method::PUT));
-    assert_eq!(Method::from_str("DELETE"), Some(Method::DELETE));
-    assert_eq!(Method::from_str("PATCH"), Some(Method::PATCH));
-    assert_eq!(Method::from_str("HEAD"), Some(Method::HEAD));
-    assert_eq!(Method::from_str("OPTIONS"), Some(Method::OPTIONS));
-    assert_eq!(Method::from_str("INVALID"), None);
+    assert_eq!(Method::from_str("GET"), Ok(Method::GET));
+    assert_eq!(Method::from_str("get"), Ok(Method::GET));
+    assert_eq!(Method::from_str("POST"), Ok(Method::POST));
+    assert_eq!(Method::from_str("PUT"), Ok(Method::PUT));
+    assert_eq!(Method::from_str("DELETE"), Ok(Method::DELETE));
+    assert_eq!(Method::from_str("PATCH"), Ok(Method::PATCH));
+    assert_eq!(Method::from_str("HEAD"), Ok(Method::HEAD));
+    assert_eq!(Method::from_str("OPTIONS"), Ok(Method::OPTIONS));
+    assert_eq!(Method::from_str("INVALID"), Err(()));
 }
 
 #[test]
@@ -204,7 +205,10 @@ fn test_response_builder_methods() {
         Some("text/plain; charset=utf-8")
     );
     assert_eq!(response.cookies.len(), 1);
-    assert_eq!(String::from_utf8(response.body.unwrap().to_vec()).unwrap(), "Hello");
+    assert_eq!(
+        String::from_utf8(response.body.unwrap().to_vec()).unwrap(),
+        "Hello"
+    );
 }
 
 #[test]
@@ -222,7 +226,10 @@ fn test_response_builder_with_json() {
         .build();
 
     assert_eq!(response.status, 200);
-    assert_eq!(response.headers.get("Content-Type"), Some("application/json"));
+    assert_eq!(
+        response.headers.get("Content-Type"),
+        Some("application/json")
+    );
 }
 
 #[test]

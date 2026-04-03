@@ -69,22 +69,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// リクエストを処理するアプリケーションを構築するためのビルダー
+#[derive(Default)]
 pub struct RunBridgeBuilder {
     routes: Vec<handler::Route>,
     middlewares: Vec<Arc<dyn common::Middleware>>,
     fallback: Option<Arc<dyn common::Handler>>,
     state: Option<Arc<dyn Any + Send + Sync>>,
-}
-
-impl Default for RunBridgeBuilder {
-    fn default() -> Self {
-        Self {
-            routes: Vec::new(),
-            middlewares: Vec::new(),
-            fallback: None,
-            state: None,
-        }
-    }
 }
 
 impl RunBridgeBuilder {

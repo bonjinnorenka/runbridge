@@ -13,8 +13,8 @@ use crate::error::Error;
 pub fn get_cgi_headers() -> HeaderMap {
     let mut headers = HeaderMap::new();
     for (key, value) in env::vars() {
-        let header_name = if key.starts_with("HTTP_") {
-            let header_parts: Vec<&str> = key[5..].split('_').collect();
+        let header_name = if let Some(stripped) = key.strip_prefix("HTTP_") {
+            let header_parts: Vec<&str> = stripped.split('_').collect();
             header_parts
                 .iter()
                 .map(|part| {

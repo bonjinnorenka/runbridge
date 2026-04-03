@@ -180,7 +180,10 @@ mod tests {
             .handle_request(Request::new(Method::GET, "/test".to_string()))
             .await;
         assert_eq!(response.status, 401);
-        assert_eq!(String::from_utf8(response.body.unwrap().to_vec()).unwrap(), "blocked");
+        assert_eq!(
+            String::from_utf8(response.body.unwrap().to_vec()).unwrap(),
+            "blocked"
+        );
     }
 
     #[derive(Clone)]

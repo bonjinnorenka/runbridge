@@ -4,8 +4,7 @@ use super::http::QueryMap;
 use crate::error::Error;
 use std::env;
 
-/// URLエンコーディングのデコード関数
-pub fn percent_decode(input: &str) -> String {
+fn percent_decode_with_plus(input: &str, plus_as_space: bool) -> String {
     let bytes = input.as_bytes();
     let mut result = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -16,7 +15,7 @@ pub fn percent_decode(input: &str) -> String {
                 i += 3;
                 continue;
             }
-        } else if bytes[i] == b'+' {
+        } else if plus_as_space && bytes[i] == b'+' {
             result.push(b' ');
             i += 1;
             continue;
@@ -25,6 +24,16 @@ pub fn percent_decode(input: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&result).into_owned()
+}
+
+/// query/form 向けの URL エンコーディングデコード関数
+pub fn percent_decode(input: &str) -> String {
+    percent_decode_with_plus(input, true)
+}
+
+/// path segment 向けの URL エンコーディングデコード関数
+pub fn percent_decode_path_segment(input: &str) -> String {
+    percent_decode_with_plus(input, false)
 }
 
 /// 16進数文字をバイト値に変換するヘルパー関数
@@ -113,26 +122,8 @@ pub fn is_cookie_name_valid(name: &str) -> bool {
         return false;
     }
     const FORBIDDEN: &[char] = &[
-        '(',
-        ')',
-        '<',
-        '>',
-        '@',
-        ',',
-        ';',
-        ':',
-        '\\',
-        '"',
-        '/',
-        '[',
-        ']',
-        '?',
-        '{',
-        '}',
-        ' ',
-        '\t',
-        '\r',
-        '\n',
+        '(', ')', '<', '>', '@', ',', ';', ':', '\\', '"', '/', '[', ']', '?', '{', '}', ' ', '\t',
+        '\r', '\n',
     ];
     name.chars()
         .all(|c| c.is_ascii() && !c.is_ascii_control() && !FORBIDDEN.contains(&c))
@@ -209,6 +200,16 @@ mod tests {
         assert_eq!(
             percent_decode("%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A"),
             "あいうえお"
+        );
+    }
+
+    #[test]
+    fn test_percent_decode_path_segment() {
+        assert_eq!(percent_decode_path_segment("alice+bob"), "alice+bob");
+        assert_eq!(percent_decode_path_segment("alice%2Bbob"), "alice+bob");
+        assert_eq!(
+            percent_decode_path_segment("%E3%81%82%E3%81%84%E3%81%86"),
+            "あいう"
         );
     }
 }

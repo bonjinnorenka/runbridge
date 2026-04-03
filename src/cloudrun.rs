@@ -4,12 +4,14 @@ use actix_web::http::header::HeaderMap as ActixHeaderMap;
 use actix_web::web::Bytes;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use log::{info, warn};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use crate::common::{
     get_max_body_size, parse_cookie_header, parse_query_string, HeaderMap, Method, Request,
     Response,
 };
+use crate::error::Error;
 use crate::RunBridge;
 
 fn convert_headers(headers: &ActixHeaderMap) -> HeaderMap {
@@ -26,7 +28,11 @@ fn convert_headers(headers: &ActixHeaderMap) -> HeaderMap {
     result
 }
 
-async fn convert_request(req: &HttpRequest, path: String, body: Option<Bytes>) -> Request {
+async fn convert_request(
+    req: &HttpRequest,
+    path: String,
+    body: Option<Bytes>,
+) -> Result<Request, Error> {
     let method = Method::from_str(req.method().as_str()).unwrap_or(Method::GET);
     let headers = convert_headers(req.headers());
     let cookies = headers
@@ -42,11 +48,9 @@ async fn convert_request(req: &HttpRequest, path: String, body: Option<Bytes>) -
     request.cookies = cookies;
     request.body = body;
 
-    if let Err(err) = request.decompress_gzip_body() {
-        warn!("Failed to decompress gzip body in Cloud Run: {}", err);
-    }
+    request.decompress_gzip_body()?;
 
-    request
+    Ok(request)
 }
 
 fn convert_to_http_response(response: Response) -> HttpResponse {
@@ -81,12 +85,22 @@ async fn handle_request(
     if let Some(ref body) = body {
         let max = get_max_body_size();
         if body.len() > max {
-            warn!("Request body too large: {} bytes (limit {})", body.len(), max);
+            warn!(
+                "Request body too large: {} bytes (limit {})",
+                body.len(),
+                max
+            );
             return HttpResponse::PayloadTooLarge().finish();
         }
     }
 
-    let request = convert_request(&req, path, body).await;
+    let request = match convert_request(&req, path, body).await {
+        Ok(request) => request,
+        Err(err) => {
+            warn!("Failed to convert Cloud Run request: {}", err);
+            return convert_to_http_response(Response::from_error(&err));
+        }
+    };
     let response = app.handle_request(request).await;
     convert_to_http_response(response)
 }
@@ -150,7 +164,13 @@ pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Re
 mod tests {
     use super::*;
     use crate::common::Cookie;
+    use crate::error::Error;
+    use crate::handler;
     use actix_web::test::TestRequest;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    use temp_env::with_vars;
 
     #[actix_rt::test]
     async fn convert_request_extracts_query_headers_and_cookies() {
@@ -160,11 +180,78 @@ mod tests {
             .insert_header(("Cookie", "session=abc; theme=dark"))
             .to_http_request();
 
-        let request = convert_request(&req, "/items/123".to_string(), None).await;
+        let request = convert_request(&req, "/items/123".to_string(), None)
+            .await
+            .unwrap();
         assert_eq!(request.query.get_all("tag"), vec!["a", "b"]);
         assert_eq!(request.headers.get("x-test"), Some("one"));
         assert_eq!(request.cookies.len(), 2);
         assert_eq!(request.cookies[0].name, "session");
+    }
+
+    #[actix_rt::test]
+    async fn convert_request_rejects_invalid_gzip_body() {
+        let req = TestRequest::post()
+            .uri("/upload")
+            .insert_header(("Content-Encoding", "gzip"))
+            .to_http_request();
+
+        let err = convert_request(
+            &req,
+            "/upload".to_string(),
+            Some(Bytes::from_static(b"not-gzip")),
+        )
+        .await
+        .expect_err("invalid gzip body must fail");
+
+        assert!(matches!(err, Error::InvalidRequestBody(_)));
+        assert_eq!(Response::from_error(&err).status, 400);
+    }
+
+    #[test]
+    fn convert_request_rejects_oversized_decompressed_body() {
+        with_vars([("RUNBRIDGE_MAX_BODY_SIZE", Some("8"))], || {
+            actix_rt::System::new().block_on(async {
+                let req = TestRequest::post()
+                    .uri("/upload")
+                    .insert_header(("Content-Encoding", "gzip"))
+                    .to_http_request();
+
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(b"012345678").unwrap();
+                let compressed = encoder.finish().unwrap();
+
+                let err =
+                    convert_request(&req, "/upload".to_string(), Some(Bytes::from(compressed)))
+                        .await
+                        .expect_err("oversized decompressed body must fail");
+
+                assert!(matches!(err, Error::PayloadTooLarge(_)));
+                assert_eq!(Response::from_error(&err).status, 413);
+            });
+        });
+    }
+
+    #[actix_rt::test]
+    async fn handle_request_returns_bad_request_for_invalid_gzip_body() {
+        let app = Arc::new(
+            RunBridge::builder()
+                .handler(handler::get("/upload", |_| Ok(Response::ok())))
+                .build(),
+        );
+        let req = TestRequest::post()
+            .uri("/upload")
+            .insert_header(("Content-Encoding", "gzip"))
+            .to_http_request();
+
+        let response = handle_request(
+            req,
+            Some(Bytes::from_static(b"not-gzip")),
+            web::Data::new(app),
+        )
+        .await;
+
+        assert_eq!(response.status(), actix_web::http::StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -183,7 +270,11 @@ mod tests {
             .collect();
 
         assert_eq!(set_cookie_values.len(), 2);
-        assert!(set_cookie_values.iter().any(|value| value.starts_with("session=abc")));
-        assert!(set_cookie_values.iter().any(|value| value.starts_with("theme=dark")));
+        assert!(set_cookie_values
+            .iter()
+            .any(|value| value.starts_with("session=abc")));
+        assert!(set_cookie_values
+            .iter()
+            .any(|value| value.starts_with("theme=dark")));
     }
 }

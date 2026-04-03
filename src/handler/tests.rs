@@ -26,6 +26,22 @@ struct TestQueryParams {
     page: u32,
 }
 
+#[derive(Deserialize, Debug, PartialEq)]
+struct SingleTagQueryParams {
+    tag: Vec<String>,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct StringQueryParams {
+    code: String,
+    flag: String,
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+struct StringPathParams {
+    id: String,
+}
+
 fn test_get_handler(_req: Request) -> Result<TestResponse, Error> {
     Ok(TestResponse {
         message: "Hello from GET".to_string(),
@@ -237,6 +253,23 @@ async fn test_path_extractor_rejection() {
 }
 
 #[tokio::test]
+async fn test_path_extractor_preserves_plus_sign() {
+    let req = Request::new(Method::GET, "/users/alice+bob".to_string())
+        .with_path_param("id", "alice+bob");
+    let parts = RequestParts::from(&req);
+
+    let path = Path::<StringPathParams>::from_request_parts(&parts)
+        .await
+        .unwrap();
+    assert_eq!(
+        path.0,
+        StringPathParams {
+            id: "alice+bob".to_string(),
+        }
+    );
+}
+
+#[tokio::test]
 async fn test_query_extractor() {
     let req = Request::new(Method::GET, "/search".to_string())
         .with_query_param("tag", "a")
@@ -254,4 +287,49 @@ async fn test_query_extractor() {
             page: 2,
         }
     );
+}
+
+#[tokio::test]
+async fn test_query_extractor_accepts_single_value_vec() {
+    let req = Request::new(Method::GET, "/search".to_string()).with_query_param("tag", "a");
+    let parts = RequestParts::from(&req);
+
+    let query = Query::<SingleTagQueryParams>::from_request_parts(&parts)
+        .await
+        .unwrap();
+    assert_eq!(
+        query.0,
+        SingleTagQueryParams {
+            tag: vec!["a".to_string()],
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_query_extractor_preserves_string_values() {
+    let req = Request::new(Method::GET, "/search".to_string())
+        .with_query_param("code", "00123")
+        .with_query_param("flag", "true");
+    let parts = RequestParts::from(&req);
+
+    let query = Query::<StringQueryParams>::from_request_parts(&parts)
+        .await
+        .unwrap();
+    assert_eq!(
+        query.0,
+        StringQueryParams {
+            code: "00123".to_string(),
+            flag: "true".to_string(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_route_path_params_preserve_plus_sign() {
+    let route = get("/users/{id}", test_get_handler);
+    let params = route
+        .match_path("/users/alice+bob")
+        .expect("route must match");
+
+    assert_eq!(params.get("id"), Some(&"alice+bob".to_string()));
 }

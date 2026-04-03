@@ -56,11 +56,17 @@ impl Handler for EchoHandler {
         );
 
         for (key, value) in &req.query {
-            response_data.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+            response_data.insert(
+                key.to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
 
         for (key, value) in &req.headers {
-            response_data.insert(key.to_ascii_lowercase(), serde_json::Value::String(value.to_string()));
+            response_data.insert(
+                key.to_ascii_lowercase(),
+                serde_json::Value::String(value.to_string()),
+            );
         }
 
         if let Some(body) = &req.body {
@@ -75,11 +81,11 @@ impl Handler for EchoHandler {
                     .get("content-type")
                     .is_some_and(|ct| ct.contains("application/json"))
                 {
-                    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&body_str) {
-                        if let serde_json::Value::Object(map) = json_value {
-                            for (key, value) in map {
-                                response_data.insert(key, value);
-                            }
+                    if let Ok(serde_json::Value::Object(map)) =
+                        serde_json::from_str::<serde_json::Value>(&body_str)
+                    {
+                        for (key, value) in map {
+                            response_data.insert(key, value);
                         }
                     }
                 }

@@ -7,6 +7,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use lambda_runtime::{run, service_fn, Error as LambdaError, LambdaEvent};
 use log::{error, info, warn};
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use crate::common::{
     get_max_body_size, parse_cookie_header, parse_cookie_strings, parse_query_string, HeaderMap,
@@ -16,7 +17,7 @@ use crate::error::Error as AppError;
 use crate::RunBridge;
 
 fn parse_http_method(method: &str) -> Result<Method, AppError> {
-    Method::from_str(method).ok_or_else(|| {
+    Method::from_str(method).map_err(|_| {
         warn!("Unsupported HTTP method in Lambda request: {}", method);
         AppError::InvalidRequestBody(format!("Unsupported HTTP method: {}", method))
     })
@@ -58,7 +59,7 @@ fn convert_apigw_request(event: ApiGatewayV2httpRequest) -> Result<Request, AppE
         Some(body_str) => {
             let max_body_bytes = get_max_body_size();
             if event.is_base64_encoded {
-                let estimated_decoded = ((body_str.len() + 3) / 4).saturating_mul(3);
+                let estimated_decoded = body_str.len().div_ceil(4).saturating_mul(3);
                 if estimated_decoded > max_body_bytes {
                     return Err(AppError::PayloadTooLarge(format!(
                         "Body too large (>{} bytes)",
@@ -189,11 +190,11 @@ pub async fn run_lambda(app: RunBridge) -> Result<(), LambdaError> {
 #[cfg(test)]
 mod tests {
     use super::{convert_apigw_request, convert_to_apigw_response, parse_http_method};
+    use crate::common::Method;
+    use crate::common::{Cookie, Response};
+    use crate::error::Error as AppError;
     use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
     use aws_lambda_events::http::header::{HeaderName, HeaderValue};
-    use crate::common::{Cookie, Response};
-    use crate::common::Method;
-    use crate::error::Error as AppError;
 
     #[test]
     fn parse_http_method_accepts_supported_methods_case_insensitive() {
