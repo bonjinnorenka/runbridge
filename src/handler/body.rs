@@ -17,3 +17,12 @@ pub fn is_json_like_content_type(ct: &str) -> bool {
         || main_type.ends_with("+json")
         || EXTRA_ALLOWED.contains(&main_type.as_str())
 }
+
+pub fn is_form_content_type(content_type: &str) -> bool {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+}

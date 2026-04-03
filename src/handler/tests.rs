@@ -1,6 +1,7 @@
 use super::*;
 use crate::common::{Handler, Method, Request, Response};
 use crate::error::Error;
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -42,6 +43,12 @@ struct StringPathParams {
     id: String,
 }
 
+#[derive(Deserialize, Debug, PartialEq)]
+struct TestFormRequest {
+    tag: Vec<String>,
+    page: u32,
+}
+
 fn test_get_handler(_req: Request) -> Result<TestResponse, Error> {
     Ok(TestResponse {
         message: "Hello from GET".to_string(),
@@ -67,6 +74,13 @@ async fn test_async_post_handler(_req: Request, body: TestRequest) -> Result<Tes
     Ok(TestResponse {
         message: format!("Hello async, {}", body.name),
         value: body.value * 3,
+    })
+}
+
+fn test_patch_handler(_req: Request, body: TestRequest) -> Result<TestResponse, Error> {
+    Ok(TestResponse {
+        message: format!("Patched {}", body.name),
+        value: body.value + 1,
     })
 }
 
@@ -140,6 +154,45 @@ async fn test_plus_json_content_type_is_accepted() {
 
     let result = route.handle(req).await.unwrap();
     assert_eq!(result.status, 200);
+}
+
+#[tokio::test]
+async fn test_patch_handler_execution() {
+    let route = patch("/users", test_patch_handler);
+    let req = Request::new(Method::PATCH, "/users".to_string())
+        .with_header("Content-Type", "application/json")
+        .with_body(
+            serde_json::to_vec(&TestRequest {
+                name: "Patch User".to_string(),
+                value: 9,
+            })
+            .unwrap(),
+        );
+
+    let result = route.handle(req).await.unwrap();
+    assert_eq!(result.status, 200);
+
+    let body_str = String::from_utf8(result.body.unwrap().to_vec()).unwrap();
+    let response: TestResponse = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(response.message, "Patched Patch User");
+    assert_eq!(response.value, 10);
+}
+
+#[tokio::test]
+async fn test_head_handler_execution() {
+    let route = head("/head", |_req: Request| {
+        Ok(Response::ok().with_body("body stays at route layer".as_bytes().to_vec()))
+    });
+
+    let result = route
+        .handle(Request::new(Method::HEAD, "/head".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(result.status, 200);
+    assert_eq!(
+        String::from_utf8(result.body.unwrap().to_vec()).unwrap(),
+        "body stays at route layer"
+    );
 }
 
 #[tokio::test]
@@ -322,6 +375,130 @@ async fn test_query_extractor_preserves_string_values() {
             flag: "true".to_string(),
         }
     );
+}
+
+#[tokio::test]
+async fn test_form_extractor_accepts_urlencoded_body() {
+    let req = Request::new(Method::POST, "/submit".to_string())
+        .with_header("Content-Type", "application/x-www-form-urlencoded")
+        .with_body("tag=a&tag=b&page=2");
+
+    let form = Form::<TestFormRequest>::from_request(&req).await.unwrap();
+    assert_eq!(
+        form.0,
+        TestFormRequest {
+            tag: vec!["a".to_string(), "b".to_string()],
+            page: 2,
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_form_extractor_accepts_charset_parameter() {
+    let req = Request::new(Method::POST, "/submit".to_string())
+        .with_header(
+            "Content-Type",
+            "application/x-www-form-urlencoded; charset=utf-8",
+        )
+        .with_body("tag=a&page=1");
+
+    let form = Form::<TestFormRequest>::from_request(&req).await.unwrap();
+    assert_eq!(
+        form.0,
+        TestFormRequest {
+            tag: vec!["a".to_string()],
+            page: 1,
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_form_extractor_rejects_missing_content_type() {
+    let req = Request::new(Method::POST, "/submit".to_string()).with_body("tag=a&page=1");
+    assert!(Form::<TestFormRequest>::from_request(&req).await.is_err());
+}
+
+#[tokio::test]
+async fn test_form_extractor_rejects_wrong_content_type() {
+    let req = Request::new(Method::POST, "/submit".to_string())
+        .with_header("Content-Type", "multipart/form-data; boundary=abc")
+        .with_body("tag=a&page=1");
+    assert!(Form::<TestFormRequest>::from_request(&req).await.is_err());
+}
+
+#[tokio::test]
+async fn test_text_body_rejects_invalid_utf8() {
+    let req = Request::new(Method::POST, "/text".to_string()).with_body(vec![0xff, 0xfe]);
+    assert!(TextBody::from_request(&req).await.is_err());
+}
+
+#[tokio::test]
+async fn test_text_body_accepts_empty_payload() {
+    let req = Request::new(Method::POST, "/text".to_string()).with_body(Vec::<u8>::new());
+    let body = TextBody::from_request(&req).await.unwrap();
+    assert_eq!(body.0, "");
+}
+
+#[tokio::test]
+async fn test_bytes_body_preserves_binary_payload() {
+    let req = Request::new(Method::POST, "/bytes".to_string()).with_body(vec![0x00, 0xff, 0x10]);
+    let body = BytesBody::from_request(&req).await.unwrap();
+    assert_eq!(body.0, Bytes::from_static(&[0x00, 0xff, 0x10]));
+}
+
+#[tokio::test]
+async fn test_post_form_builder_executes() {
+    let route = post_form("/submit", |_req: Request, body: TestFormRequest| {
+        Ok(Response::ok().with_body(format!("{}:{}", body.tag.join(","), body.page).into_bytes()))
+    });
+
+    let response = route
+        .handle(
+            Request::new(Method::POST, "/submit".to_string())
+                .with_header("Content-Type", "application/x-www-form-urlencoded")
+                .with_body("tag=a&tag=b&page=2"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        String::from_utf8(response.body.unwrap().to_vec()).unwrap(),
+        "a,b:2"
+    );
+}
+
+#[tokio::test]
+async fn test_post_text_builder_executes() {
+    let route = post_text("/text", |_req: Request, body: String| {
+        Ok(Response::ok().with_body(body.into_bytes()))
+    });
+
+    let response = route
+        .handle(Request::new(Method::POST, "/text".to_string()).with_body("hello"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        String::from_utf8(response.body.unwrap().to_vec()).unwrap(),
+        "hello"
+    );
+}
+
+#[tokio::test]
+async fn test_post_bytes_builder_executes() {
+    let route = post_bytes("/bytes", |_req: Request, body: Bytes| {
+        Ok(Response::ok().with_body(body))
+    });
+
+    let response = route
+        .handle(Request::new(Method::POST, "/bytes".to_string()).with_body(vec![1u8, 2u8, 3u8]))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body.unwrap(), Bytes::from_static(&[1, 2, 3]));
 }
 
 #[tokio::test]

@@ -50,7 +50,10 @@ P0 では RunBridge の core を以下の責務に分離した。
 ### Public surface
 
 - `handler::get("/users/{id}", ...)`
+- `handler::patch("/users/{id}", ...)`
+- `handler::head("/users/{id}", ...)`
 - `handler::route(Method::PATCH, "/users/{id}", custom_handler)`
+- `Router::new().route(...).merge(...).nest("/api", ...)`
 
 ### Template rules
 
@@ -71,6 +74,13 @@ P0 では RunBridge の core を以下の責務に分離した。
 - `NotFound`
 
 `MethodNotAllowed` では `Allow` ヘッダーを返す。fallback は `NotFound` のときだけ使う。
+
+### Router flatten
+
+- `Router` は tree を保持せず flatten 済み `Route` 列へ落とす
+- `nest("/api", router)` は prefix を path template として単純結合する
+- duplicate route 検出は flatten 後の `(method, path)` に対して行う
+- `fallback` と `state` は app-wide only
 
 ## Handler / Extractor
 
@@ -100,6 +110,12 @@ route metadata は `Route` が持つ。
 - `Json<T>`
 - `State<T>`
 
+### P1 concrete extractors
+
+- `Form<T>`: `application/x-www-form-urlencoded` のみ受理し、`serde_html_form` で deserialize
+- `TextBody`: body を UTF-8 として読む
+- `BytesBody`: body を `Bytes` のまま返す
+
 `Json<T>` は body-consuming extractor。P0 では既存 builder の `Request + T` 形を互換レイヤとして残し、内部で `Json<T>` を使う。
 
 ## Middleware
@@ -115,11 +131,33 @@ pub trait Middleware: Send + Sync {
 - 登録順の先頭が最外周
 - 404 / 405 / fallback / matched route のすべてを包む
 
+### P1 middleware order
+
+- `RunBridgeBuilder.middleware()` が最外周
+- `Router.middleware()` はその内側
+- `Route::layer()` は route ごとの最内周
+- response の復路は逆順
+
 ## App state
 
 - `RunBridge::builder().state(Arc<T>)`
 - `State<T>` extractor で取得
 - 複数依存は 1 つの state struct に束ねる前提
+
+## Error handling
+
+- default は `Response::from_error()` と同じ固定マッピング
+- `RunBridgeBuilder::error_handler(...)` で app ごとに差し替え可能
+- custom error handler は handler / middleware / fallback handler 自体が返した `Err(Error)` のみ対象
+- `404` / `405` の router outcome には適用しない
+
+## CORS helper
+
+- `Cors` は `Middleware` 実装
+- actual request では許可 origin のときのみ `Access-Control-Allow-Origin` などを付与する
+- preflight request (`OPTIONS + Origin + Access-Control-Request-Method`) は middleware が `204 No Content` で short-circuit する
+- `allow_headers` 未指定時に request header を反射しない
+- `allow_any_origin() + allow_credentials(true)` は `try_validate()` で `ConfigurationError`
 
 ## Backend adapter responsibility
 

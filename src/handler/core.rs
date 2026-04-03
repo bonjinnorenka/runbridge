@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::common::utils::percent_decode_path_segment;
-use crate::common::{Handler, Method, Request, Response};
+use crate::common::{Handler, Method, Middleware, Request, Response};
 use crate::error::Error;
 
 type HandlerFuture = Pin<Box<dyn Future<Output = Result<Response, Error>> + Send + 'static>>;
@@ -195,6 +195,8 @@ pub struct Route {
     path: String,
     pattern: PathPattern,
     handler: Arc<dyn Handler>,
+    middlewares: Vec<Arc<dyn Middleware>>,
+    route_middleware_count: usize,
 }
 
 impl Route {
@@ -209,6 +211,8 @@ impl Route {
             path,
             pattern,
             handler: Arc::new(handler),
+            middlewares: Vec::new(),
+            route_middleware_count: 0,
         })
     }
 
@@ -224,8 +228,21 @@ impl Route {
         self.method == *method && self.pattern.match_path(path).is_some()
     }
 
+    pub fn layer<M>(mut self, middleware: M) -> Self
+    where
+        M: Middleware + 'static,
+    {
+        self.middlewares.push(Arc::new(middleware));
+        self.route_middleware_count += 1;
+        self
+    }
+
     pub(crate) fn handler(&self) -> &Arc<dyn Handler> {
         &self.handler
+    }
+
+    pub(crate) fn middlewares(&self) -> &[Arc<dyn Middleware>] {
+        &self.middlewares
     }
 
     pub(crate) fn match_path(&self, path: &str) -> Option<HashMap<String, String>> {
@@ -237,6 +254,34 @@ impl Route {
             self.pattern.static_segment_count(),
             self.pattern.segment_count(),
         )
+    }
+
+    pub(crate) fn try_with_path_prefix(mut self, prefix: &str) -> Result<Self, Error> {
+        let path = crate::router::join_paths(prefix, &self.path)?;
+        self.pattern = PathPattern::parse(&path)?;
+        self.path = path;
+        Ok(self)
+    }
+
+    pub(crate) fn prepend_group_middlewares(&mut self, middlewares: &[Arc<dyn Middleware>]) {
+        if middlewares.is_empty() {
+            return;
+        }
+
+        let insert_at = self
+            .middlewares
+            .len()
+            .saturating_sub(self.route_middleware_count);
+        self.middlewares
+            .splice(insert_at..insert_at, middlewares.iter().cloned());
+    }
+
+    pub(crate) fn push_group_middleware(&mut self, middleware: Arc<dyn Middleware>) {
+        let insert_at = self
+            .middlewares
+            .len()
+            .saturating_sub(self.route_middleware_count);
+        self.middlewares.insert(insert_at, middleware);
     }
 }
 

@@ -3,11 +3,12 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use serde::de::DeserializeOwned;
 
 use crate::common::{Cookie, HeaderMap, Method, QueryMap, Request, RequestContext, Response};
 
-use super::body::is_json_like_content_type;
+use super::body::{is_form_content_type, is_json_like_content_type};
 use super::response::IntoResponse;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,5 +233,103 @@ where
         let value = serde_json::from_slice(body)
             .map_err(|err| ExtractError::bad_request(err.to_string()))?;
         Ok(Self(value))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Form<T>(pub T);
+
+impl<T> Deref for Form<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[async_trait]
+impl<T> FromRequest for Form<T>
+where
+    T: DeserializeOwned + Send,
+{
+    type Rejection = ExtractError;
+
+    async fn from_request(req: &Request) -> Result<Self, Self::Rejection> {
+        let content_type = req
+            .headers
+            .get("content-type")
+            .ok_or_else(|| ExtractError::bad_request("missing Content-Type header"))?;
+
+        if !is_form_content_type(content_type) {
+            return Err(ExtractError::bad_request(format!(
+                "unsupported Content-Type: {}",
+                content_type
+            )));
+        }
+
+        let body = req
+            .body
+            .as_ref()
+            .ok_or_else(|| ExtractError::bad_request("missing request body"))?;
+
+        if body.is_empty() {
+            return Err(ExtractError::bad_request("missing request body"));
+        }
+
+        let body = std::str::from_utf8(body.as_ref())
+            .map_err(|err| ExtractError::bad_request(err.to_string()))?;
+        let value = serde_html_form::from_str(body)
+            .map_err(|err| ExtractError::bad_request(err.to_string()))?;
+        Ok(Self(value))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextBody(pub String);
+
+impl Deref for TextBody {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[async_trait]
+impl FromRequest for TextBody {
+    type Rejection = ExtractError;
+
+    async fn from_request(req: &Request) -> Result<Self, Self::Rejection> {
+        let body = req
+            .body
+            .as_ref()
+            .ok_or_else(|| ExtractError::bad_request("missing request body"))?;
+        let text = String::from_utf8(body.to_vec())
+            .map_err(|err| ExtractError::bad_request(err.to_string()))?;
+        Ok(Self(text))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BytesBody(pub Bytes);
+
+impl Deref for BytesBody {
+    type Target = Bytes;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+#[async_trait]
+impl FromRequest for BytesBody {
+    type Rejection = ExtractError;
+
+    async fn from_request(req: &Request) -> Result<Self, Self::Rejection> {
+        let body = req
+            .body
+            .as_ref()
+            .ok_or_else(|| ExtractError::bad_request("missing request body"))?;
+        Ok(Self(body.clone()))
     }
 }

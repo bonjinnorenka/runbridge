@@ -14,6 +14,9 @@ P0 では core を再設計し、`Request` / `Response` / routing / middleware /
 - app state は `RunBridge::builder().state(Arc<T>)` で注入します
 - `405 Method Not Allowed` では自動で `Allow` ヘッダーを返します
 - global fallback は `RunBridge::builder().fallback(...)` で設定します
+- `Router` と `nest("/prefix", ...)` で route を機能単位に合成できます
+- body extractor は `Json<T>` に加えて `Form<T>`, `TextBody`, `BytesBody` を使えます
+- `patch()` / `head()` builder と custom `ErrorHandler`, `Cors` middleware を追加しました
 
 ## インストール
 
@@ -111,6 +114,24 @@ let app = RunBridge::builder()
     .build();
 ```
 
+`Router` を使うと route を prefix 単位でまとめられます。
+
+```rust
+use runbridge::{handler, Request, Response, Router, RunBridge};
+
+let api_router = Router::new()
+    .route(handler::get("/users", |_req: Request| Ok("users")))
+    .route(handler::get("/users/{id}", |req: Request| {
+        Ok(Response::ok().with_body(
+            req.path_params["id"].clone().into_bytes(),
+        ))
+    }));
+
+let app = RunBridge::builder()
+    .nest("/api", api_router)
+    .build();
+```
+
 ## Request / Response
 
 `Request`:
@@ -165,6 +186,26 @@ impl Middleware for AuthMiddleware {
 }
 ```
 
+middleware の実行順は `app-level -> Router.middleware() -> Route::layer() -> endpoint` です。
+
+```rust
+use runbridge::{handler, Request, Response, Router, RunBridge};
+
+let api = Router::new()
+    .middleware(AuthMiddleware)
+    .route(
+        handler::get("/profile", |_req: Request| {
+            Ok(Response::ok().with_body("ok".as_bytes().to_vec()))
+        })
+        .layer(AuditMiddleware),
+    );
+
+let app = RunBridge::builder()
+    .middleware(TracingMiddleware)
+    .nest("/api", api)
+    .build();
+```
+
 ## App State
 
 ```rust
@@ -217,6 +258,87 @@ fallback は `NotFound` のときだけ動きます。`405 Method Not Allowed` �
 - `Query<T>`
 - `Json<T>`
 - `State<T>`
+- `Form<T>`
+- `TextBody`
+- `BytesBody`
+
+```rust
+use runbridge::{handler, BytesBody, Request, Response, TextBody};
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+struct LoginForm {
+    email: String,
+    tags: Vec<String>,
+}
+
+let app = RunBridge::builder()
+    .handler(handler::post_form("/login", |_req: Request, form: LoginForm| {
+        Ok(Response::ok().with_body(form.email.into_bytes()))
+    }))
+    .handler(handler::post_text("/echo", |_req: Request, text: String| {
+        Ok(Response::ok().with_body(text.into_bytes()))
+    }))
+    .handler(handler::post_bytes("/upload", |_req: Request, body: bytes::Bytes| {
+        Ok(Response::ok().with_body(body))
+    }))
+    .build();
+```
+
+`patch()` は `post()` / `put()` と同じ JSON compatibility builder です。`head()` は `get()` と同じシグネチャで登録でき、レスポンス body は core 側で自動抑止されます。
+
+```rust
+let app = RunBridge::builder()
+    .handler(handler::patch("/items/{id}", |_req: Request, body: serde_json::Value| {
+        Ok(body)
+    }))
+    .handler(handler::head("/health", |_req: Request| Ok(Response::ok())))
+    .build();
+```
+
+## Error Handling
+
+handler や middleware が `Err(Error)` を返したときの response は `ErrorHandler` で差し替えられます。`404` / `405` の static response には適用されません。
+
+```rust
+use runbridge::{error_handler, Request, Response, RunBridge, StatusCode};
+
+let app = RunBridge::builder()
+    .error_handler(error_handler(|req, err| {
+        let path = req.path.clone();
+        let status = err.status_code();
+        async move {
+            Response::with_status(StatusCode::InternalServerError)
+                .json(&serde_json::json!({
+                    "path": path,
+                    "status": status,
+                }))
+                .unwrap()
+        }
+    }))
+    .build();
+```
+
+## CORS
+
+`Cors` は middleware として使います。actual request には `Access-Control-Allow-Origin` などを付与し、preflight request は middleware で `204 No Content` に short-circuit します。
+
+```rust
+use runbridge::{Cors, Method, RunBridge};
+
+let cors = Cors::new()
+    .allow_origin("https://example.com")
+    .allow_methods([Method::GET, Method::PATCH])
+    .allow_headers(["Content-Type", "X-Token"])
+    .expose_headers(["X-Trace-Id"])
+    .max_age(600);
+
+cors.try_validate().unwrap();
+
+let app = RunBridge::builder()
+    .middleware(cors)
+    .build();
+```
 
 P0 時点では variadic extractor builder はまだ導入していません。既存 builder は内部で extractor core を使う互換レイヤです。
 

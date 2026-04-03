@@ -47,8 +47,11 @@ const _: () = {
 };
 
 pub mod common;
+pub mod cors;
 pub mod error;
+pub mod error_handler;
 pub mod handler;
+pub mod router;
 
 #[cfg(feature = "lambda")]
 pub mod lambda;
@@ -60,8 +63,11 @@ pub mod cloudrun;
 pub mod cgi;
 
 pub use common::*;
+pub use cors::*;
 pub use error::*;
+pub use error_handler::*;
 pub use handler::*;
+pub use router::*;
 
 use async_trait::async_trait;
 use std::any::Any;
@@ -69,17 +75,23 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// リクエストを処理するアプリケーションを構築するためのビルダー
-#[derive(Default)]
 pub struct RunBridgeBuilder {
     routes: Vec<handler::Route>,
     middlewares: Vec<Arc<dyn common::Middleware>>,
     fallback: Option<Arc<dyn common::Handler>>,
     state: Option<Arc<dyn Any + Send + Sync>>,
+    error_handler: Arc<dyn error_handler::ErrorHandler>,
 }
 
 impl RunBridgeBuilder {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            routes: Vec::new(),
+            middlewares: Vec::new(),
+            fallback: None,
+            state: None,
+            error_handler: error_handler::default_error_handler(),
+        }
     }
 
     pub fn handler(mut self, route: handler::Route) -> Self {
@@ -124,12 +136,36 @@ impl RunBridgeBuilder {
         self
     }
 
+    pub fn router(mut self, router: router::Router) -> Self {
+        for route in router.into_routes() {
+            self = self.handler(route);
+        }
+        self
+    }
+
+    pub fn nest(self, prefix: impl Into<String>, router: router::Router) -> Self {
+        let prefix = prefix.into();
+        let router = router::Router::new()
+            .try_nest(prefix, router)
+            .unwrap_or_else(|err| panic!("Failed to nest router: {}", err));
+        self.router(router)
+    }
+
+    pub fn error_handler<E>(mut self, handler: E) -> Self
+    where
+        E: error_handler::ErrorHandler + 'static,
+    {
+        self.error_handler = Arc::new(handler);
+        self
+    }
+
     pub fn build(self) -> RunBridge {
         RunBridge {
             routes: self.routes,
             middlewares: self.middlewares,
             fallback: self.fallback,
             state: self.state,
+            error_handler: self.error_handler,
         }
     }
 }
@@ -140,6 +176,7 @@ pub struct RunBridge {
     middlewares: Vec<Arc<dyn common::Middleware>>,
     fallback: Option<Arc<dyn common::Handler>>,
     state: Option<Arc<dyn Any + Send + Sync>>,
+    error_handler: Arc<dyn error_handler::ErrorHandler>,
 }
 
 #[derive(Clone)]
@@ -213,18 +250,22 @@ impl RunBridge {
     }
 
     pub async fn handle_request(&self, mut request: common::Request) -> common::Response {
+        let is_head_request = request.method == common::Method::HEAD;
         request.path_params.clear();
         request
             .context_mut()
             .set_app_state(self.state.as_ref().map(Arc::clone));
 
         let static_handler;
+        let route_middlewares: &[Arc<dyn common::Middleware>];
         let endpoint: &dyn common::Handler = match self.resolve(&request.path, &request.method) {
             handler::RouteMatch::Matched { route, path_params } => {
                 request.path_params = path_params;
+                route_middlewares = route.middlewares();
                 route.handler().as_ref()
             }
             handler::RouteMatch::MethodNotAllowed { allow } => {
+                route_middlewares = &[];
                 let allow_header = allow
                     .iter()
                     .map(ToString::to_string)
@@ -239,6 +280,7 @@ impl RunBridge {
                 &static_handler
             }
             handler::RouteMatch::NotFound => {
+                route_middlewares = &[];
                 if let Some(fallback) = &self.fallback {
                     fallback.as_ref()
                 } else {
@@ -252,15 +294,24 @@ impl RunBridge {
             }
         };
 
+        let error_request = request.clone_without_context();
+        let mut middlewares = self.middlewares.clone();
+        middlewares.extend(route_middlewares.iter().cloned());
         let next = common::Next {
-            middlewares: &self.middlewares,
+            middlewares: &middlewares,
             endpoint,
         };
 
-        match next.run(request).await {
+        let mut response = match next.run(request).await {
             Ok(response) => response,
-            Err(error) => common::Response::from_error(&error),
+            Err(error) => self.error_handler.handle(&error_request, &error).await,
+        };
+
+        if is_head_request {
+            response.body = None;
         }
+
+        response
     }
 
     pub fn middlewares(&self) -> &[Arc<dyn common::Middleware>] {
