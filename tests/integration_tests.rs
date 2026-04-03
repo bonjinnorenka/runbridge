@@ -7,10 +7,33 @@ mod tests {
         common::StatusCode,
         common::{Middleware, Next, Request, Response},
         error::Error,
-        error_handler, handler, Cors, FromRequestParts, Handler, Method, Router, RunBridge,
+        error_handler, handler, Cors, FixedFileOptions, FromRequestParts, Handler, Method, Router,
+        RunBridge,
     };
     use serde::{Deserialize, Serialize};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+
+    static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        let id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "runbridge_integration_{}_{}_{}",
+            process::id(),
+            id,
+            name
+        ))
+    }
+
+    fn write_temp_file(name: &str, body: &[u8]) -> PathBuf {
+        let path = unique_temp_path(name);
+        fs::write(&path, body).expect("temp file must be written");
+        path
+    }
 
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct ItemRequest {
@@ -93,6 +116,130 @@ mod tests {
 
         assert_eq!(response.status, 405);
         assert_eq!(response.headers.get("Allow"), Some("GET"));
+    }
+
+    #[tokio::test]
+    async fn test_fixed_file_get_and_head() {
+        let path = write_temp_file("favicon.ico", &[0x00, 0x01, 0x02, 0xff]);
+        let app = RunBridge::builder()
+            .fixed_file("/favicon.ico", &path)
+            .build();
+
+        let get_response = app
+            .handle_request(Request::new(Method::GET, "/favicon.ico".to_string()))
+            .await;
+        assert_eq!(get_response.status, 200);
+        assert_eq!(
+            get_response.headers.get("Content-Type"),
+            Some("image/x-icon")
+        );
+        assert_eq!(
+            get_response.body,
+            Some(bytes::Bytes::from_static(&[0x00, 0x01, 0x02, 0xff]))
+        );
+
+        let head_response = app
+            .handle_request(Request::new(Method::HEAD, "/favicon.ico".to_string()))
+            .await;
+        assert_eq!(head_response.status, 200);
+        assert_eq!(
+            head_response.headers.get("Content-Type"),
+            Some("image/x-icon")
+        );
+        assert!(head_response.body.is_none());
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn test_fixed_file_without_head_returns_405() {
+        let path = write_temp_file("robots.txt", b"User-agent: *\nDisallow:");
+        let app = RunBridge::builder()
+            .fixed_file_with(
+                "/robots.txt",
+                &path,
+                FixedFileOptions::new()
+                    .cache_control("public, max-age=300")
+                    .without_head(),
+            )
+            .build();
+
+        let get_response = app
+            .handle_request(Request::new(Method::GET, "/robots.txt".to_string()))
+            .await;
+        assert_eq!(get_response.status, 200);
+        assert_eq!(
+            get_response.headers.get("Cache-Control"),
+            Some("public, max-age=300")
+        );
+        assert_eq!(
+            get_response.body.as_deref(),
+            Some(&b"User-agent: *\nDisallow:"[..])
+        );
+
+        let head_response = app
+            .handle_request(Request::new(Method::HEAD, "/robots.txt".to_string()))
+            .await;
+        assert_eq!(head_response.status, 405);
+        assert_eq!(head_response.headers.get("Allow"), Some("GET"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_fixed_file_rejects_duplicate_get_route() {
+        let path = write_temp_file("duplicate-favicon.ico", &[0x00, 0x01, 0x02, 0xff]);
+        let err = match RunBridge::builder()
+            .handler(handler::get("/favicon.ico", |_req: Request| Ok("ok")))
+            .try_fixed_file("/favicon.ico", &path)
+        {
+            Ok(_) => panic!("duplicate GET route must be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, Error::ConfigurationError(_)));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn test_fixed_file_coexists_with_other_routes() {
+        let path = write_temp_file("assetlinks.json", br#"{"relation":[]}"#);
+        let app = RunBridge::builder()
+            .fixed_file_with(
+                "/.well-known/assetlinks.json",
+                &path,
+                FixedFileOptions::new()
+                    .content_disposition("inline")
+                    .header("X-Fixed-File", "yes"),
+            )
+            .handler(handler::get("/health", |_req: Request| Ok("ok")))
+            .build();
+
+        let fixed_file_response = app
+            .handle_request(Request::new(
+                Method::GET,
+                "/.well-known/assetlinks.json".to_string(),
+            ))
+            .await;
+        assert_eq!(fixed_file_response.status, 200);
+        assert_eq!(
+            fixed_file_response.headers.get("Content-Type"),
+            Some("application/json")
+        );
+        assert_eq!(
+            fixed_file_response.headers.get("Content-Disposition"),
+            Some("inline")
+        );
+        assert_eq!(fixed_file_response.headers.get("X-Fixed-File"), Some("yes"));
+
+        let health_response = app
+            .handle_request(Request::new(Method::GET, "/health".to_string()))
+            .await;
+        assert_eq!(health_response.status, 200);
+        assert_eq!(health_response.body.as_deref(), Some(&b"\"ok\""[..]));
+
+        let _ = fs::remove_file(path);
     }
 
     #[tokio::test]

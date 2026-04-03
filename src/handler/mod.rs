@@ -4,6 +4,7 @@ pub mod body;
 pub mod builders;
 pub mod core;
 pub mod extractors;
+pub mod fixed_file;
 pub mod response;
 
 pub use crate::router::Router;
@@ -20,6 +21,7 @@ pub use extractors::{
     BytesBody, ExtractError, Form, FromRequest, FromRequestParts, Json, Path, Query, RequestParts,
     State, TextBody,
 };
+pub use fixed_file::FixedFileOptions;
 pub use response::IntoResponse;
 
 #[cfg(test)]

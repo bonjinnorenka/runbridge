@@ -210,6 +210,28 @@ mod tests {
     }
 
     #[actix_rt::test]
+    async fn convert_to_http_response_preserves_binary_fixed_file_body() {
+        let response = Response::ok()
+            .with_header("Content-Type", "image/png")
+            .with_body(vec![0x89, 0x50, 0x4e, 0x47]);
+
+        let converted = convert_to_http_response(response);
+
+        assert_eq!(converted.status(), actix_web::http::StatusCode::OK);
+        assert_eq!(
+            converted
+                .headers()
+                .get("Content-Type")
+                .and_then(|value| value.to_str().ok()),
+            Some("image/png")
+        );
+        let body = actix_web::body::to_bytes(converted.into_body())
+            .await
+            .expect("response body must be readable");
+        assert_eq!(body.as_ref(), &[0x89, 0x50, 0x4e, 0x47]);
+    }
+
+    #[actix_rt::test]
     async fn cloud_run_accepts_gzip_json_and_exposes_decompressed_request() {
         let seen_request = Arc::new(Mutex::new(None));
         let seen_request_for_handler = Arc::clone(&seen_request);

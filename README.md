@@ -296,6 +296,35 @@ let app = RunBridge::builder()
     .build();
 ```
 
+## Fixed Files
+
+少数の固定ファイルを返す専用 helper として `fixed_file()` / `fixed_file_with()` を使えます。ファイルは app build 時に読み込まれ、各 request で再読込しません。
+
+これは汎用 static file server ではありません。directory serving、動的な path-to-file 解決、range request は対象外です。
+
+```rust
+use runbridge::{FixedFileOptions, RunBridge};
+
+let app = RunBridge::builder()
+    .fixed_file("/favicon.ico", "./public/favicon.ico")
+    .fixed_file_with(
+        "/robots.txt",
+        "./public/robots.txt",
+        FixedFileOptions::new()
+            .content_type("text/plain; charset=utf-8")
+            .cache_control("public, max-age=300"),
+    )
+    .build();
+```
+
+- `GET` は自動登録されます
+- `HEAD` もデフォルトで自動登録され、response body は core 側で自動抑止されます
+- `FixedFileOptions::without_head()` で `HEAD` 登録を無効化できます
+- `Content-Type` は拡張子から自動推定し、`content_type(...)` で上書きできます
+- `Cache-Control`、`Content-Disposition`、任意の追加ヘッダーも設定できます
+
+拡張子がない固定ファイル、たとえば `/.well-known/apple-app-site-association` のようなケースでは `content_type(...)` を明示するのが安全です。
+
 ## Error Handling
 
 handler や middleware が `Err(Error)` を返したときの response は `ErrorHandler` で差し替えられます。`404` / `405` の static response には適用されません。

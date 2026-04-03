@@ -193,6 +193,7 @@ mod tests {
     use crate::common::Method;
     use crate::common::{Cookie, Response};
     use crate::error::Error as AppError;
+    use aws_lambda_events::encodings::Body;
     use aws_lambda_events::event::apigw::ApiGatewayV2httpRequest;
     use aws_lambda_events::http::header::{HeaderName, HeaderValue};
 
@@ -252,5 +253,24 @@ mod tests {
             .cookies
             .iter()
             .any(|cookie| cookie.starts_with("theme=dark")));
+    }
+
+    #[test]
+    fn convert_to_apigw_response_base64_encodes_binary_body() {
+        let response = Response::ok()
+            .with_header("Content-Type", "image/x-icon")
+            .with_body(vec![0x00, 0xff, 0x10, 0x80]);
+
+        let converted = convert_to_apigw_response(response);
+
+        assert!(converted.is_base64_encoded);
+        assert_eq!(converted.body, Some(Body::Text("AP8QgA==".to_string())));
+        assert_eq!(
+            converted
+                .headers
+                .get(HeaderName::from_static("content-type"))
+                .and_then(|value| value.to_str().ok()),
+            Some("image/x-icon")
+        );
     }
 }

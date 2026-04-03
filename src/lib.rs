@@ -42,6 +42,7 @@ pub const _RUNBRIDGE_NO_TARGET_FEATURE_WARNING: () = ();
     not(feature = "cloud_run"),
     not(feature = "cgi")
 ))]
+#[allow(deprecated)]
 const _: () = {
     let _ = _RUNBRIDGE_NO_TARGET_FEATURE_WARNING;
 };
@@ -118,6 +119,92 @@ impl RunBridgeBuilder {
 
         self.routes.push(route);
         self
+    }
+
+    fn has_route(&self, method: common::Method, path: &str) -> bool {
+        self.routes
+            .iter()
+            .any(|existing| existing.method() == method && existing.path() == path)
+    }
+
+    pub fn try_fixed_file<P>(
+        self,
+        route_path: impl Into<String>,
+        file_path: P,
+    ) -> Result<Self, error::Error>
+    where
+        P: AsRef<std::path::Path>,
+    {
+        self.try_fixed_file_with(route_path, file_path, handler::FixedFileOptions::new())
+    }
+
+    pub fn fixed_file<P>(self, route_path: impl Into<String>, file_path: P) -> Self
+    where
+        P: AsRef<std::path::Path>,
+    {
+        self.try_fixed_file(route_path, file_path)
+            .unwrap_or_else(|err| panic!("Failed to register fixed file: {}", err))
+    }
+
+    pub fn try_fixed_file_with<P>(
+        mut self,
+        route_path: impl Into<String>,
+        file_path: P,
+        options: handler::FixedFileOptions,
+    ) -> Result<Self, error::Error>
+    where
+        P: AsRef<std::path::Path>,
+    {
+        let route_path = route_path.into();
+        handler::fixed_file::validate_fixed_file_route_path(&route_path)?;
+        handler::fixed_file::validate_fixed_file_options(&options)?;
+
+        if self.has_route(common::Method::GET, &route_path) {
+            return Err(error::Error::ConfigurationError(format!(
+                "fixed file route conflicts with an existing GET route: {}",
+                route_path
+            )));
+        }
+
+        if options.register_head && self.has_route(common::Method::HEAD, &route_path) {
+            return Err(error::Error::ConfigurationError(format!(
+                "fixed file route conflicts with an existing HEAD route: {}",
+                route_path
+            )));
+        }
+
+        let loaded = handler::fixed_file::load_fixed_file(file_path.as_ref(), options)?;
+        let register_head = loaded.register_head;
+        let asset = Arc::new(loaded.asset);
+
+        self = self.handler(handler::try_route(
+            common::Method::GET,
+            route_path.clone(),
+            handler::fixed_file::FixedFileHandler::new(Arc::clone(&asset)),
+        )?);
+
+        if register_head {
+            self = self.handler(handler::try_route(
+                common::Method::HEAD,
+                route_path,
+                handler::fixed_file::FixedFileHandler::new(asset),
+            )?);
+        }
+
+        Ok(self)
+    }
+
+    pub fn fixed_file_with<P>(
+        self,
+        route_path: impl Into<String>,
+        file_path: P,
+        options: handler::FixedFileOptions,
+    ) -> Self
+    where
+        P: AsRef<std::path::Path>,
+    {
+        self.try_fixed_file_with(route_path, file_path, options)
+            .unwrap_or_else(|err| panic!("Failed to register fixed file: {}", err))
     }
 
     pub fn middleware<M>(mut self, middleware: M) -> Self

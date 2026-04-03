@@ -75,6 +75,31 @@ P0 では RunBridge の core を以下の責務に分離した。
 
 `MethodNotAllowed` では `Allow` ヘッダーを返す。fallback は `NotFound` のときだけ使う。
 
+## Fixed file helper
+
+### Public surface
+
+- `RunBridgeBuilder::try_fixed_file(path, file_path)`
+- `RunBridgeBuilder::fixed_file(path, file_path)`
+- `RunBridgeBuilder::try_fixed_file_with(path, file_path, FixedFileOptions)`
+- `RunBridgeBuilder::fixed_file_with(path, file_path, FixedFileOptions)`
+- `FixedFileOptions::new().content_type(...).cache_control(...).content_disposition(...).header(...).without_head()`
+
+### Behavior
+
+- 固定ファイルは builder 実行時に読み込んで `Bytes` として保持する
+- `GET` は必ず登録する
+- `HEAD` はデフォルトで同時登録し、body 抑止は `RunBridge::handle_request()` の既存処理に任せる
+- `Content-Type` は拡張子から自動推定し、未判定時は `application/octet-stream`
+- `content_type(...)` 指定時は自動推定より優先する
+- `Cache-Control` / `Content-Disposition` / 任意ヘッダーを追加できる
+
+### Constraints
+
+- route path は固定静的パスのみ対応し、`{param}` を含む path template は拒否する
+- `extra_headers` で `Content-Type` / `Cache-Control` / `Content-Disposition` / `Content-Length` の上書きは許可しない
+- directory serving、dynamic file resolution、range request、conditional GET、streaming は対象外
+
 ### Router flatten
 
 - `Router` は tree を保持せず flatten 済み `Route` 列へ落とす

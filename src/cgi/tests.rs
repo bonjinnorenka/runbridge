@@ -114,6 +114,29 @@ fn test_write_response_multiple_set_cookie_lines() {
 }
 
 #[test]
+fn test_write_response_preserves_binary_body() {
+    let binary_body = vec![0x00, 0xff, 0x10, 0x80];
+    let response = Response::new(200)
+        .with_header("Content-Type", "application/octet-stream")
+        .with_body(binary_body.clone());
+
+    let mut buf: Vec<u8> = Vec::new();
+    write_response_to(response, &mut buf).expect("write_response_to failed");
+
+    let separator = b"\r\n\r\n";
+    let body_index = buf
+        .windows(separator.len())
+        .position(|window| window == separator)
+        .map(|index| index + separator.len())
+        .expect("header separator must exist");
+
+    assert!(buf[..body_index]
+        .windows(b"Content-Type: application/octet-stream".len())
+        .any(|window| window == b"Content-Type: application/octet-stream"));
+    assert_eq!(&buf[body_index..], binary_body.as_slice());
+}
+
+#[test]
 fn test_redact_value_for_log() {
     assert_eq!(
         redact_value_for_log("CONTENT_TYPE", "application/json"),

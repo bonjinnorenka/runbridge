@@ -1,6 +1,6 @@
 [package]
 name = "runbridge"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "A Rust library for running serverless functions on AWS Lambda and Google Cloud Run"
 authors = ["Your Name <your.email@example.com>"]
@@ -28,6 +28,7 @@ async-trait = "0.1"
 thiserror = "2"
 regex = "1"
 base64 = "0.22"
+mime_guess = "2"
 
 # Lambda関連の依存関係
 lambda_runtime = { version = "1", optional = true }
