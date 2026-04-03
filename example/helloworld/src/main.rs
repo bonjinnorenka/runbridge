@@ -18,14 +18,11 @@ struct GreetingRequest {
 // GETリクエスト用ハンドラー関数
 fn hello_handler(req: Request) -> Result<GreetingResponse, Error> {
     // クエリパラメータからnameを取得（一時オブジェクト問題を回避するためにletで変数を作成）
-    let default_name = "World".to_string();
-    let name = req.query_params.get("name").unwrap_or(&default_name);
-    
-    let default_lang = "en".to_string();
-    let language = req.query_params.get("lang").unwrap_or(&default_lang);
+    let name = req.query.get("name").unwrap_or("World");
+    let language = req.query.get("lang").unwrap_or("en");
     
     // 言語に基づいて挨拶を変更
-    let greeting = match language.as_str() {
+    let greeting = match language {
         "ja" => format!("こんにちは、{}!", name),
         "fr" => format!("Bonjour, {} !", name),
         "es" => format!("¡Hola, {}!", name),

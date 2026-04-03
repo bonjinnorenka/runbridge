@@ -40,14 +40,11 @@ async fn hello_async_handler(req: Request) -> Result<GreetingResponse, Error> {
     let start = std::time::Instant::now();
     
     // クエリパラメータからnameを取得
-    let default_name = "World".to_string();
-    let name = req.query_params.get("name").unwrap_or(&default_name);
-    
-    let default_lang = "en".to_string();
-    let language = req.query_params.get("lang").unwrap_or(&default_lang);
+    let name = req.query.get("name").unwrap_or("World");
+    let language = req.query.get("lang").unwrap_or("en");
 
     // クエリパラメータからdelayを取得（ミリ秒）
-    let delay_ms = req.query_params.get("delay")
+    let delay_ms = req.query.get("delay")
         .and_then(|d| d.parse::<u64>().ok())
         .unwrap_or(0);
     
@@ -57,7 +54,7 @@ async fn hello_async_handler(req: Request) -> Result<GreetingResponse, Error> {
     }
     
     // 言語に基づいて挨拶を変更
-    let greeting = match language.as_str() {
+    let greeting = match language {
         "ja" => format!("こんにちは、{}!", name),
         "fr" => format!("Bonjour, {} !", name),
         "es" => format!("¡Hola, {}!", name),
@@ -84,7 +81,7 @@ async fn hello_async_handler(req: Request) -> Result<GreetingResponse, Error> {
 // アイテムのベクターを返す非同期ハンドラー
 async fn items_async_handler(req: Request) -> Result<ItemsResponse, Error> {
     // クエリパラメータからcountを取得
-    let count = req.query_params.get("count")
+    let count = req.query.get("count")
         .and_then(|c| c.parse::<usize>().ok())
         .unwrap_or(5);
     
@@ -116,7 +113,7 @@ async fn items_async_handler(req: Request) -> Result<ItemsResponse, Error> {
 // 文字列のベクターを返す非同期ハンドラー
 async fn strings_async_handler(req: Request) -> Result<StringsResponse, Error> {
     // クエリパラメータからcountを取得
-    let count = req.query_params.get("count")
+    let count = req.query.get("count")
         .and_then(|c| c.parse::<usize>().ok())
         .unwrap_or(5);
     
@@ -144,7 +141,7 @@ async fn strings_async_handler(req: Request) -> Result<StringsResponse, Error> {
 // 直接文字列ベクターを返す非同期ハンドラー
 async fn direct_strings_handler(req: Request) -> Result<Vec<String>, Error> {
     // クエリパラメータからcountを取得
-    let count = req.query_params.get("count")
+    let count = req.query.get("count")
         .and_then(|c| c.parse::<usize>().ok())
         .unwrap_or(5);
     
