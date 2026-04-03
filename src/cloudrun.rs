@@ -34,7 +34,13 @@ async fn convert_request(
     body: Option<Bytes>,
 ) -> Result<Request, Error> {
     let method = Method::from_str(req.method().as_str()).unwrap_or(Method::GET);
-    let headers = convert_headers(req.headers());
+    let mut headers = convert_headers(req.headers());
+    if headers
+        .get("content-encoding")
+        .is_some_and(|encoding| encoding.eq_ignore_ascii_case("gzip"))
+    {
+        headers.remove("content-encoding");
+    }
     let cookies = headers
         .get("cookie")
         .map(parse_cookie_header)
@@ -47,8 +53,6 @@ async fn convert_request(
     request.headers = headers;
     request.cookies = cookies;
     request.body = body;
-
-    request.decompress_gzip_body()?;
 
     Ok(request)
 }
@@ -105,6 +109,34 @@ async fn handle_request(
     convert_to_http_response(response)
 }
 
+async fn handle_request_without_body(
+    req: HttpRequest,
+    app: web::Data<Arc<RunBridge>>,
+) -> HttpResponse {
+    handle_request(req, None, app).await
+}
+
+async fn handle_request_with_body(
+    req: HttpRequest,
+    body: Bytes,
+    app: web::Data<Arc<RunBridge>>,
+) -> HttpResponse {
+    handle_request(req, Some(body), app).await
+}
+
+fn configure_cloud_run_routes(cfg: &mut web::ServiceConfig) {
+    cfg.route("/{path:.*}", web::get().to(handle_request_without_body))
+        .route("/{path:.*}", web::post().to(handle_request_with_body))
+        .route("/{path:.*}", web::put().to(handle_request_with_body))
+        .route("/{path:.*}", web::delete().to(handle_request_without_body))
+        .route("/{path:.*}", web::patch().to(handle_request_with_body))
+        .route("/{path:.*}", web::head().to(handle_request_without_body))
+        .route(
+            "/{path:.*}",
+            web::method(actix_web::http::Method::OPTIONS).to(handle_request_without_body),
+        );
+}
+
 pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Result<()> {
     info!("Starting HTTP server on {}:{}", host, port);
 
@@ -117,43 +149,7 @@ pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Re
         App::new()
             .app_data(app_data.clone())
             .app_data(web::PayloadConfig::new(max_body))
-            .route(
-                "/{path:.*}",
-                web::get().to(|req, app: web::Data<Arc<RunBridge>>| handle_request(req, None, app)),
-            )
-            .route(
-                "/{path:.*}",
-                web::post().to(|req, body: Option<Bytes>, app: web::Data<Arc<RunBridge>>| {
-                    handle_request(req, body, app)
-                }),
-            )
-            .route(
-                "/{path:.*}",
-                web::put().to(|req, body: Option<Bytes>, app: web::Data<Arc<RunBridge>>| {
-                    handle_request(req, body, app)
-                }),
-            )
-            .route(
-                "/{path:.*}",
-                web::delete()
-                    .to(|req, app: web::Data<Arc<RunBridge>>| handle_request(req, None, app)),
-            )
-            .route(
-                "/{path:.*}",
-                web::patch().to(|req, body: Option<Bytes>, app: web::Data<Arc<RunBridge>>| {
-                    handle_request(req, body, app)
-                }),
-            )
-            .route(
-                "/{path:.*}",
-                web::head()
-                    .to(|req, app: web::Data<Arc<RunBridge>>| handle_request(req, None, app)),
-            )
-            .route(
-                "/{path:.*}",
-                web::method(actix_web::http::Method::OPTIONS)
-                    .to(|req, app: web::Data<Arc<RunBridge>>| handle_request(req, None, app)),
-            )
+            .configure(configure_cloud_run_routes)
     })
     .bind((host, port))?
     .run()
@@ -164,13 +160,14 @@ pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Re
 mod tests {
     use super::*;
     use crate::common::Cookie;
-    use crate::error::Error;
     use crate::handler;
+    use actix_web::test;
     use actix_web::test::TestRequest;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use serde_json::Value;
     use std::io::Write;
-    use temp_env::with_vars;
+    use std::sync::Mutex;
 
     #[actix_rt::test]
     async fn convert_request_extracts_query_headers_and_cookies() {
@@ -190,72 +187,156 @@ mod tests {
     }
 
     #[actix_rt::test]
-    async fn convert_request_rejects_invalid_gzip_body() {
+    async fn convert_request_removes_gzip_header_without_redecoding_body() {
         let req = TestRequest::post()
             .uri("/upload")
             .insert_header(("Content-Encoding", "gzip"))
+            .insert_header(("Content-Type", "application/json"))
             .to_http_request();
 
-        let err = convert_request(
+        let request = convert_request(
             &req,
             "/upload".to_string(),
-            Some(Bytes::from_static(b"not-gzip")),
+            Some(Bytes::from_static(br#"{"message":"ok"}"#)),
         )
         .await
-        .expect_err("invalid gzip body must fail");
+        .expect("cloud run request conversion must not re-decode gzip body");
 
-        assert!(matches!(err, Error::InvalidRequestBody(_)));
-        assert_eq!(Response::from_error(&err).status, 400);
-    }
-
-    #[test]
-    fn convert_request_rejects_oversized_decompressed_body() {
-        with_vars([("RUNBRIDGE_MAX_BODY_SIZE", Some("8"))], || {
-            actix_rt::System::new().block_on(async {
-                let req = TestRequest::post()
-                    .uri("/upload")
-                    .insert_header(("Content-Encoding", "gzip"))
-                    .to_http_request();
-
-                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-                encoder.write_all(b"012345678").unwrap();
-                let compressed = encoder.finish().unwrap();
-
-                let err =
-                    convert_request(&req, "/upload".to_string(), Some(Bytes::from(compressed)))
-                        .await
-                        .expect_err("oversized decompressed body must fail");
-
-                assert!(matches!(err, Error::PayloadTooLarge(_)));
-                assert_eq!(Response::from_error(&err).status, 413);
-            });
-        });
+        assert_eq!(
+            request.body,
+            Some(Bytes::from_static(br#"{"message":"ok"}"#))
+        );
+        assert!(request.headers.get("content-encoding").is_none());
     }
 
     #[actix_rt::test]
-    async fn handle_request_returns_bad_request_for_invalid_gzip_body() {
+    async fn cloud_run_accepts_gzip_json_and_exposes_decompressed_request() {
+        let seen_request = Arc::new(Mutex::new(None));
+        let seen_request_for_handler = Arc::clone(&seen_request);
         let app = Arc::new(
             RunBridge::builder()
-                .handler(handler::get("/upload", |_| Ok(Response::ok())))
+                .handler(handler::post("/upload", move |req, body: Value| {
+                    *seen_request_for_handler.lock().unwrap() = Some(req);
+                    Ok(serde_json::json!({
+                        "message": body["message"].as_str().unwrap_or_default(),
+                    }))
+                }))
                 .build(),
         );
-        let req = TestRequest::post()
-            .uri("/upload")
-            .insert_header(("Content-Encoding", "gzip"))
-            .to_http_request();
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(br#"{"message":"hello gzip"}"#)
+            .expect("gzip payload write must succeed");
+        let compressed = encoder.finish().expect("gzip payload must finalize");
 
-        let response = handle_request(
-            req,
-            Some(Bytes::from_static(b"not-gzip")),
-            web::Data::new(app),
+        let service = test::init_service(
+            App::new()
+                .app_data(web::Data::new(app))
+                .app_data(web::PayloadConfig::new(get_max_body_size()))
+                .configure(configure_cloud_run_routes),
+        )
+        .await;
+
+        let response = test::call_service(
+            &service,
+            TestRequest::post()
+                .uri("/upload")
+                .insert_header(("Content-Type", "application/json"))
+                .insert_header(("Content-Encoding", "gzip"))
+                .set_payload(compressed)
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
+        let response_body: Value = test::read_body_json(response).await;
+        assert_eq!(response_body["message"], "hello gzip");
+
+        let seen_request = seen_request
+            .lock()
+            .unwrap()
+            .take()
+            .expect("handler must receive a request");
+        assert!(seen_request.headers.get("content-encoding").is_none());
+        assert_eq!(
+            seen_request.body,
+            Some(Bytes::from_static(br#"{"message":"hello gzip"}"#))
+        );
+    }
+
+    #[actix_rt::test]
+    async fn cloud_run_returns_bad_request_for_invalid_gzip_body() {
+        let app = Arc::new(
+            RunBridge::builder()
+                .handler(handler::post("/upload", |_req, _body: Value| {
+                    Ok(Response::ok())
+                }))
+                .build(),
+        );
+        let service = test::init_service(
+            App::new()
+                .app_data(web::Data::new(app))
+                .app_data(web::PayloadConfig::new(get_max_body_size()))
+                .configure(configure_cloud_run_routes),
+        )
+        .await;
+
+        let response = test::call_service(
+            &service,
+            TestRequest::post()
+                .uri("/upload")
+                .insert_header(("Content-Type", "application/json"))
+                .insert_header(("Content-Encoding", "gzip"))
+                .set_payload("not-gzip")
+                .to_request(),
         )
         .await;
 
         assert_eq!(response.status(), actix_web::http::StatusCode::BAD_REQUEST);
     }
 
-    #[test]
-    fn convert_to_http_response_preserves_multiple_cookies() {
+    #[actix_rt::test]
+    async fn cloud_run_returns_payload_too_large_for_oversized_gzip_body() {
+        let app = Arc::new(
+            RunBridge::builder()
+                .handler(handler::post("/upload", |_req, _body: Value| {
+                    Ok(Response::ok())
+                }))
+                .build(),
+        );
+        let service = test::init_service(
+            App::new()
+                .app_data(web::Data::new(app))
+                .app_data(web::PayloadConfig::new(8))
+                .configure(configure_cloud_run_routes),
+        )
+        .await;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(br#"{"message":"too large"}"#)
+            .expect("gzip payload write must succeed");
+        let compressed = encoder.finish().expect("gzip payload must finalize");
+
+        let response = test::call_service(
+            &service,
+            TestRequest::post()
+                .uri("/upload")
+                .insert_header(("Content-Type", "application/json"))
+                .insert_header(("Content-Encoding", "gzip"))
+                .set_payload(compressed)
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            actix_web::http::StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+
+    #[actix_rt::test]
+    async fn convert_to_http_response_preserves_multiple_cookies() {
         let response = Response::ok()
             .append_header("X-Test", "one")
             .append_header("X-Test", "two")
