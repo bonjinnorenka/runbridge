@@ -22,12 +22,14 @@ P0 では core を再設計し、`Request` / `Response` / routing / middleware /
 
 ```toml
 [dependencies]
-runbridge = { version = "0.1.1", features = ["cloud_run"] }
+runbridge = { version = "0.2.0", features = ["cloud_run"] }
 # または
-runbridge = { version = "0.1.1", features = ["lambda"] }
+runbridge = { version = "0.2.0", features = ["lambda"] }
 # または
-runbridge = { version = "0.1.1", features = ["cgi"] }
+runbridge = { version = "0.2.0", features = ["cgi"] }
 ```
+
+v0.1.1 から上げる場合は [移行ガイド](docs/migration/v0.1-to-v0.2.md) と [CHANGELOG](CHANGELOG.md) を参照してください。
 
 ## 基本例
 
@@ -227,7 +229,7 @@ let app = RunBridge::builder()
     .build();
 ```
 
-`State<T>` extractor trait も公開されています。P0 では既存の `Request` / `Request + Json<T>` builders を互換レイヤとして残しつつ、extractor を使う core に移行しています。
+`State<T>` extractor も公開されています。P0 では既存の `Request` / `Request + Json<T>` builders を互換レイヤとして残しつつ、extractor を使う core に移行しています。
 
 ## Fallback
 
@@ -298,7 +300,7 @@ let app = RunBridge::builder()
 
 ## Fixed Files
 
-少数の固定ファイルを返す専用 helper として `fixed_file()` / `fixed_file_with()` を使えます。ファイルは app build 時に読み込まれ、各 request で再読込しません。
+少数の固定ファイルを返す専用 helper として `fixed_file()` / `fixed_file_with()` を使えます。ファイルは builder 実行時に読み込まれ、各 request で再読込しません。
 
 これは汎用 static file server ではありません。directory serving、動的な path-to-file 解決、range request は対象外です。
 
@@ -372,6 +374,8 @@ let app = RunBridge::builder()
 P0 時点では variadic extractor builder はまだ導入していません。既存 builder は内部で extractor core を使う互換レイヤです。
 
 ## Migration Note
+
+詳細は [docs/migration/v0.1-to-v0.2.md](docs/migration/v0.1-to-v0.2.md) と [CHANGELOG.md](CHANGELOG.md) を参照してください。
 
 P0 以前からの主な breaking changes:
 
