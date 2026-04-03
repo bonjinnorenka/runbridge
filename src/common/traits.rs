@@ -1,18 +1,13 @@
 //! コアトレイト定義（Handler、Middleware）
 
-use super::http::{Method, Request, Response};
+use super::http::{Request, Response};
 use crate::error::Error;
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// ハンドラーの特性
 #[async_trait]
 pub trait Handler: Send + Sync {
-    /// パスとメソッドがこのハンドラにマッチするかどうかを判定
-    fn matches(&self, path: &str, method: &Method) -> bool;
-
-    /// ハンドラに関連付けられたパスパターン文字列を取得
-    fn path_pattern(&self) -> &str;
-
     /// リクエストを処理
     async fn handle(&self, req: Request) -> Result<Response, Error>;
 }
@@ -20,9 +15,31 @@ pub trait Handler: Send + Sync {
 /// ミドルウェアの特性
 #[async_trait]
 pub trait Middleware: Send + Sync {
-    /// リクエスト前の処理
-    async fn pre_process(&self, req: Request) -> Result<Request, Error>;
+    /// リクエストを包み込み、必要なら `next` を呼ぶ
+    async fn handle(&self, req: Request, next: Next<'_>) -> Result<Response, Error>;
+}
 
-    /// レスポンス後の処理
-    async fn post_process(&self, res: Response) -> Result<Response, Error>;
+/// 次のミドルウェアまたは最終ハンドラー
+pub struct Next<'a> {
+    pub(crate) middlewares: &'a [Arc<dyn Middleware>],
+    pub(crate) endpoint: &'a dyn Handler,
+}
+
+impl<'a> Next<'a> {
+    /// 次のミドルウェアまたは最終ハンドラーを実行
+    pub async fn run(self, req: Request) -> Result<Response, Error> {
+        if let Some((current, rest)) = self.middlewares.split_first() {
+            current
+                .handle(
+                    req,
+                    Next {
+                        middlewares: rest,
+                        endpoint: self.endpoint,
+                    },
+                )
+                .await
+        } else {
+            self.endpoint.handle(req).await
+        }
+    }
 }

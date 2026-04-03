@@ -1,21 +1,21 @@
 //! CGIリクエストの処理機能
 
-use std::collections::HashMap;
 use std::env;
 use std::io::{self, Read};
 
+use bytes::Bytes;
+
 use super::validation::{is_valid_header_name, is_valid_header_value};
-use crate::common::get_max_body_size;
+use crate::common::{get_max_body_size, HeaderMap};
 use crate::error::Error;
 
 /// 環境変数からHTTPヘッダーを取得する
-pub fn get_cgi_headers() -> HashMap<String, String> {
-    let mut headers = HashMap::new();
+pub fn get_cgi_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
     for (key, value) in env::vars() {
         let header_name = if key.starts_with("HTTP_") {
-            // HTTP_X_AUTH_TOKEN -> X-Auth-Token のように変換
             let header_parts: Vec<&str> = key[5..].split('_').collect();
-            let header_name = header_parts
+            header_parts
                 .iter()
                 .map(|part| {
                     let mut chars = part.chars();
@@ -28,11 +28,10 @@ pub fn get_cgi_headers() -> HashMap<String, String> {
                     }
                 })
                 .collect::<Vec<String>>()
-                .join("-");
-            header_name
+                .join("-")
         } else if key == "CONTENT_TYPE" || key == "CONTENT_LENGTH" {
             let header_parts: Vec<&str> = key.split('_').collect();
-            let header_name = header_parts
+            header_parts
                 .iter()
                 .map(|part| {
                     let mut chars = part.chars();
@@ -45,26 +44,22 @@ pub fn get_cgi_headers() -> HashMap<String, String> {
                     }
                 })
                 .collect::<Vec<String>>()
-                .join("-");
-            header_name
+                .join("-")
         } else {
             continue;
         };
-        // ヘッダー名のバリデーション（英数字とハイフンのみ許可、ASCII限定）
-        if !is_valid_header_name(&header_name) {
+
+        if !is_valid_header_name(&header_name) || !is_valid_header_value(&value) {
             continue;
         }
-        // ヘッダー値のバリデーション（ASCIIホワイトリスト）
-        if !is_valid_header_value(&value) {
-            continue;
-        }
-        headers.insert(header_name, value);
+
+        headers.append(header_name, value);
     }
     headers
 }
 
 /// リクエストボディを標準入力から読み込む
-pub fn read_request_body() -> Result<Option<Vec<u8>>, Error> {
+pub fn read_request_body() -> Result<Option<Bytes>, Error> {
     if let Ok(content_length_str) = env::var("CONTENT_LENGTH") {
         if let Ok(content_length) = content_length_str.parse::<usize>() {
             if content_length > 0 {
@@ -80,7 +75,7 @@ pub fn read_request_body() -> Result<Option<Vec<u8>>, Error> {
                 io::stdin().read_exact(&mut buffer).map_err(|e| {
                     Error::InvalidRequestBody(format!("Failed to read request body: {}", e))
                 })?;
-                return Ok(Some(buffer));
+                return Ok(Some(Bytes::from(buffer)));
             }
         }
     }

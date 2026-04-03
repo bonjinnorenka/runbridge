@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     // アプリケーションを構築
-    let app = RunBridge::builder()
+    let _app = RunBridge::builder()
         .handler(get("/api/normal", normal_handler))
         .handler(get("/api/custom-headers", custom_header_handler))
         .handler(get("/api/cors", cors_handler))
@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "cloud_run")]
     {
         // Cloud Run環境での実行
-        runbridge::cloudrun::run_cloud_run(app, "127.0.0.1", 8080).await?;
+        runbridge::cloudrun::run_cloud_run(_app, "127.0.0.1", 8080).await?;
     }
 
     #[cfg(feature = "lambda")]

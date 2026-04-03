@@ -7,13 +7,11 @@ use tokio::task;
 use super::error_logging::{gather_cgi_panic_context, log_error_to_file};
 use super::request::{get_cgi_headers, read_request_body};
 use super::response::write_response;
-use crate::common::{parse_query_string, Method, Request, Response};
+use crate::common::{parse_cookie_header, parse_query_string, Method, Request, Response};
 use crate::error::Error;
 use crate::RunBridge;
 
-/// CGIリクエスト情報をRunBridgeリクエストに変換し、処理を実行する
 pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
-    // 環境変数からリクエスト情報を取得
     let method_str = env::var("REQUEST_METHOD").map_err(|_| {
         Error::InvalidRequestBody("REQUEST_METHOD environment variable not set".to_string())
     })?;
@@ -24,63 +22,43 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
     let path = env::var("PATH_INFO").unwrap_or_else(|_| "/".to_string());
     let query_string = env::var("QUERY_STRING").unwrap_or_default();
 
-    // クエリパラメータを解析
-    let query_params = parse_query_string(&query_string);
-
-    // ヘッダーを取得
+    let query = parse_query_string(&query_string);
     let headers = get_cgi_headers();
+    let cookies = headers
+        .get("cookie")
+        .map(parse_cookie_header)
+        .unwrap_or_default();
 
-    // ボディを読み込む（上限超過時はここで413レスポンスを返す）
     let body = match read_request_body() {
-        Ok(b) => b,
-        Err(Error::PayloadTooLarge(_msg)) => {
+        Ok(body) => body,
+        Err(Error::PayloadTooLarge(_)) => {
             let res = Response::new(413)
                 .with_header("Content-Type", "text/plain")
                 .with_body("Payload Too Large".as_bytes().to_vec());
             write_response(res)?;
             return Ok(());
         }
-        Err(e) => return Err(e),
+        Err(err) => return Err(err),
     };
 
-    // リクエストを構築
     let mut request = Request::new(method, path.clone());
-    request.query_params = query_params;
-    // Request取り込み時にヘッダーキーを小文字へ正規化
-    request.headers = headers
-        .into_iter()
-        .map(|(k, v)| (k.to_ascii_lowercase(), v))
-        .collect();
+    request.query = query;
+    request.headers = headers;
+    request.cookies = cookies;
     request.body = body;
 
-    // gzipボディを解凍（必要な場合のみ）
-    if let Err(e) = request.decompress_gzip_body() {
-        error!("Failed to decompress gzip body in CGI: {}", e);
-        let res = Response::from_error(&e);
-        write_response(res)?;
+    if let Err(err) = request.decompress_gzip_body() {
+        error!("Failed to decompress gzip body in CGI: {}", err);
+        write_response(Response::from_error(&err))?;
         return Ok(());
     }
 
-    // リクエストを処理
     debug!("Processing CGI request: {} {}", method, path);
 
-    // ハンドラ内でのpanicを検知するためにspawnしてJoinErrorを検査
     let task_result = task::spawn(async move { process_request(app, request).await }).await;
 
     let response = match task_result {
-        // タスクが正常終了し、かつハンドラがResult::Ok/Errを返した場合
-        Ok(inner_result) => match inner_result {
-            Ok(res) => res,
-            Err(err) => {
-                error!("Error processing request: {:?}", err);
-                log_error_to_file(&format!(
-                    "Handler returned error at {} {}: {:?}",
-                    method, path, err
-                ));
-                Response::from_error(&err)
-            }
-        },
-        // タスクがpanicした場合
+        Ok(response) => response,
         Err(join_err) => {
             let panic_info = if join_err.is_panic() {
                 "panic occurred in handler".to_string()
@@ -89,7 +67,6 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
             };
             error!("{}", panic_info);
             log_error_to_file(&format!("{} at {} {}", panic_info, method, path));
-            // panic時は可能な限り具体的な環境情報を追記（センシティブ値はマスク）
             if join_err.is_panic() {
                 let ctx = gather_cgi_panic_context(&method.to_string(), &path);
                 log_error_to_file(&ctx);
@@ -100,48 +77,11 @@ pub async fn run_cgi(app: RunBridge) -> Result<(), Error> {
         }
     };
 
-    // レスポンスを標準出力に書き出す
     write_response(response)?;
-
     info!("CGI request processed successfully");
     Ok(())
 }
 
-/// リクエストを処理する
-async fn process_request(app: RunBridge, request: Request) -> Result<Response, Error> {
-    // ハンドラを検索
-    let handler = app
-        .find_handler(&request.path, &request.method)
-        .ok_or_else(|| Error::RouteNotFound(format!("{} {}", request.method, request.path)))?;
-
-    // ミドルウェアの前処理を適用
-    let mut processed_request = request;
-    for middleware in app.middlewares() {
-        processed_request = middleware.pre_process(processed_request).await?;
-    }
-
-    // ハンドラでリクエストを処理
-    let handler_result = handler.handle(processed_request).await;
-
-    // レスポンスの処理
-    let mut response = match handler_result {
-        Ok(res) => res,
-        Err(e) => {
-            error!("Handler error: {}", e);
-            return Ok(Response::from_error(&e));
-        }
-    };
-
-    // ミドルウェアの後処理を適用
-    for middleware in app.middlewares() {
-        match middleware.post_process(response).await {
-            Ok(processed) => response = processed,
-            Err(e) => {
-                error!("Middleware error in post-processing: {}", e);
-                response = Response::from_error(&e);
-            }
-        }
-    }
-
-    Ok(response)
+async fn process_request(app: RunBridge, request: Request) -> Response {
+    app.handle_request(request).await
 }

@@ -1,235 +1,177 @@
 use std::future::Future;
+use std::sync::Arc;
 
-use futures::future::{self, Ready};
 use serde::de::DeserializeOwned;
 
-use crate::common::Method;
-use crate::common::Request;
+use crate::common::{Handler, Method, Request};
 use crate::error::Error;
 
-use super::core::{AsyncRouteHandler, RouteHandler};
-use super::response::ResponseWrapper;
+use super::core::{async_handler, route, sync_handler, try_route, Route};
+use super::extractors::{FromRequest, Json};
+use super::IntoResponse;
 
-// 可読性のための型エイリアス（ボディ必須の非同期ハンドラー）
-pub type BodyOrError<Fut, R> = future::Either<Ready<Result<R, Error>>, Fut>;
-
-// 同期: Option<T> から T を要求し、なければエラーにする薄いアダプタ
-fn require_body_sync<F, T, R>(
-    handler: F,
-) -> impl Fn(Request, Option<T>) -> Result<R, Error> + Send + Sync + 'static
+fn sync_json_handler<F, T, R>(handler: F) -> impl Handler
 where
     F: Fn(Request, T) -> Result<R, Error> + Send + Sync + 'static,
-    T: serde::de::DeserializeOwned + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
+    T: DeserializeOwned + Send + 'static,
+    R: IntoResponse + 'static,
 {
-    move |req, body_data| {
-        if let Some(data) = body_data {
-            handler(req, data)
-        } else {
-            Err(Error::InvalidRequestBody(
-                "Missing request body".to_string(),
-            ))
-        }
-    }
+    let handler = Arc::new(handler);
+    async_handler(move |req: Request| {
+        let handler = Arc::clone(&handler);
+        let req_for_body = req.clone_without_context();
+        let fut = async move {
+            let body = match Json::<T>::from_request(&req_for_body).await {
+                Ok(body) => body.0,
+                Err(rejection) => return Ok(rejection.into_response()),
+            };
+            handler(req, body).map(|value| value.into_response())
+        };
+        fut
+    })
 }
 
-// 非同期: Option<T> から T を要求し、なければ即時エラーfutureを返すアダプタ
-fn require_body_async<F, T, R, Fut>(
-    handler: F,
-) -> impl Fn(Request, Option<T>) -> BodyOrError<Fut, R> + Send + Sync + 'static
+fn async_json_handler<F, T, R, Fut>(handler: F) -> impl Handler
 where
     F: Fn(Request, T) -> Fut + Send + Sync + 'static,
-    T: serde::de::DeserializeOwned + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
-    Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
+    T: DeserializeOwned + Send + 'static,
+    R: IntoResponse + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + 'static,
 {
-    move |req, body_data| {
-        if let Some(data) = body_data {
-            future::Either::Right(handler(req, data))
-        } else {
-            future::Either::Left(future::ready(Err(Error::InvalidRequestBody(
-                "Missing request body".to_string(),
-            ))))
-        }
-    }
+    let handler = Arc::new(handler);
+    async_handler(move |req: Request| {
+        let handler = Arc::clone(&handler);
+        let req_for_body = req.clone_without_context();
+        let fut = async move {
+            let body = match Json::<T>::from_request(&req_for_body).await {
+                Ok(body) => body.0,
+                Err(rejection) => return Ok(rejection.into_response()),
+            };
+            handler(req, body).await.map(|value| value.into_response())
+        };
+        fut
+    })
 }
 
-/// マクロでHTTPハンドラーを生成するための補助関数
-pub fn get<F, R>(
-    path: impl Into<String>,
-    handler: F,
-) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
+pub fn get<F, R>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
+    R: IntoResponse + 'static,
 {
-    #[allow(deprecated)]
-    RouteHandler::new(Method::GET, path, move |req, _| handler(req))
+    route(Method::GET, path, sync_handler(handler))
 }
 
-/// マクロでHTTPハンドラーを生成するための補助関数（エラーハンドリング付き）
-pub fn try_get<F, R>(
-    path: impl Into<String>,
-    handler: F,
-) -> Result<
-    RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>,
-    Error,
->
+pub fn try_get<F, R>(path: impl Into<String>, handler: F) -> Result<Route, Error>
 where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
+    R: IntoResponse + 'static,
 {
-    RouteHandler::try_new(Method::GET, path, move |req, _| handler(req))
+    try_route(Method::GET, path, sync_handler(handler))
 }
 
-/// 非同期GETハンドラーを作成
-pub fn async_get<F, R, Fut>(
-    path: impl Into<String>,
-    handler: F,
-) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
+pub fn async_get<F, R, Fut>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
-    Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
+    R: IntoResponse + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + 'static,
 {
-    #[allow(deprecated)]
-    AsyncRouteHandler::new(Method::GET, path, move |req, _| handler(req))
+    route(Method::GET, path, async_handler(handler))
 }
 
-/// 非同期GETハンドラーを作成（エラーハンドリング付き）
-pub fn try_async_get<F, R, Fut>(
-    path: impl Into<String>,
-    handler: F,
-) -> Result<
-    AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>,
-    Error,
->
+pub fn try_async_get<F, R, Fut>(path: impl Into<String>, handler: F) -> Result<Route, Error>
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
-    Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
+    R: IntoResponse + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + 'static,
 {
-    AsyncRouteHandler::try_new(Method::GET, path, move |req, _| handler(req))
+    try_route(Method::GET, path, async_handler(handler))
 }
 
-/// POSTハンドラーを作成
-pub fn post<F, T, R>(
-    path: impl Into<String>,
-    handler: F,
-) -> RouteHandler<impl Fn(Request, Option<T>) -> Result<R, Error> + Send + Sync + 'static, T, R>
+pub fn post<F, T, R>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request, T) -> Result<R, Error> + Send + Sync + 'static,
-    T: DeserializeOwned + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
+    T: DeserializeOwned + Send + 'static,
+    R: IntoResponse + 'static,
 {
-    #[allow(deprecated)]
-    RouteHandler::new(Method::POST, path, require_body_sync(handler))
+    route(Method::POST, path, sync_json_handler(handler))
 }
 
-/// 非同期POSTハンドラーを作成
-pub fn async_post<F, T, R, Fut>(
-    path: impl Into<String>,
-    handler: F,
-) -> AsyncRouteHandler<
-    impl Fn(Request, Option<T>) -> BodyOrError<Fut, R> + Send + Sync + 'static,
-    T,
-    R,
-    BodyOrError<Fut, R>,
->
+pub fn async_post<F, T, R, Fut>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request, T) -> Fut + Send + Sync + 'static,
-    T: DeserializeOwned + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
-    Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
+    T: DeserializeOwned + Send + 'static,
+    R: IntoResponse + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + 'static,
 {
-    #[allow(deprecated)]
-    AsyncRouteHandler::new(Method::POST, path, require_body_async(handler))
+    route(Method::POST, path, async_json_handler(handler))
 }
 
-/// PUTハンドラーを作成
-pub fn put<F, T, R>(
-    path: impl Into<String>,
-    handler: F,
-) -> RouteHandler<impl Fn(Request, Option<T>) -> Result<R, Error> + Send + Sync + 'static, T, R>
+pub fn put<F, T, R>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request, T) -> Result<R, Error> + Send + Sync + 'static,
-    T: DeserializeOwned + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
+    T: DeserializeOwned + Send + 'static,
+    R: IntoResponse + 'static,
 {
-    #[allow(deprecated)]
-    RouteHandler::new(Method::PUT, path, require_body_sync(handler))
+    route(Method::PUT, path, sync_json_handler(handler))
 }
 
-/// 非同期PUTハンドラーを作成
-pub fn async_put<F, T, R, Fut>(
-    path: impl Into<String>,
-    handler: F,
-) -> AsyncRouteHandler<
-    impl Fn(Request, Option<T>) -> BodyOrError<Fut, R> + Send + Sync + 'static,
-    T,
-    R,
-    BodyOrError<Fut, R>,
->
+pub fn async_put<F, T, R, Fut>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request, T) -> Fut + Send + Sync + 'static,
-    T: DeserializeOwned + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
-    Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
+    T: DeserializeOwned + Send + 'static,
+    R: IntoResponse + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + 'static,
 {
-    #[allow(deprecated)]
-    AsyncRouteHandler::new(Method::PUT, path, require_body_async(handler))
+    route(Method::PUT, path, async_json_handler(handler))
 }
 
-/// DELETEハンドラーを作成
-pub fn delete<F, R>(
-    path: impl Into<String>,
-    handler: F,
-) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
+pub fn delete<F, R>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
+    R: IntoResponse + 'static,
 {
-    #[allow(deprecated)]
-    RouteHandler::new(Method::DELETE, path, move |req, _| handler(req))
+    route(Method::DELETE, path, sync_handler(handler))
 }
 
-/// 非同期DELETEハンドラーを作成
-pub fn async_delete<F, R, Fut>(
-    path: impl Into<String>,
-    handler: F,
-) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
+pub fn async_delete<F, R, Fut>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
-    Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
+    R: IntoResponse + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + 'static,
 {
-    #[allow(deprecated)]
-    AsyncRouteHandler::new(Method::DELETE, path, move |req, _| handler(req))
+    route(Method::DELETE, path, async_handler(handler))
 }
 
-/// OPTIONSハンドラーを作成
-pub fn options<F, R>(
-    path: impl Into<String>,
-    handler: F,
-) -> RouteHandler<impl Fn(Request, Option<()>) -> Result<R, Error> + Send + Sync + 'static, (), R>
+pub fn options<F, R>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
+    R: IntoResponse + 'static,
 {
-    #[allow(deprecated)]
-    RouteHandler::new(Method::OPTIONS, path, move |req, _| handler(req))
+    route(Method::OPTIONS, path, sync_handler(handler))
 }
 
-/// 非同期OPTIONSハンドラーを作成
-pub fn async_options<F, R, Fut>(
-    path: impl Into<String>,
-    handler: F,
-) -> AsyncRouteHandler<impl Fn(Request, Option<()>) -> Fut + Send + Sync + 'static, (), R, Fut>
+pub fn async_options<F, R, Fut>(path: impl Into<String>, handler: F) -> Route
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
-    R: ResponseWrapper + Send + Sync + 'static,
-    Fut: Future<Output = Result<R, Error>> + Send + Sync + 'static,
+    R: IntoResponse + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + 'static,
 {
-    #[allow(deprecated)]
-    AsyncRouteHandler::new(Method::OPTIONS, path, move |req, _| handler(req))
+    route(Method::OPTIONS, path, async_handler(handler))
+}
+
+pub fn fallback<F, R>(handler: F) -> impl Handler
+where
+    F: Fn(Request) -> Result<R, Error> + Send + Sync + 'static,
+    R: IntoResponse + 'static,
+{
+    sync_handler(handler)
+}
+
+pub fn async_fallback<F, R, Fut>(handler: F) -> impl Handler
+where
+    F: Fn(Request) -> Fut + Send + Sync + 'static,
+    R: IntoResponse + 'static,
+    Fut: Future<Output = Result<R, Error>> + Send + 'static,
+{
+    async_handler(handler)
 }

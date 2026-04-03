@@ -1,8 +1,10 @@
 //! HTTP関連の基本型とユーティリティ
 
 use super::context::RequestContext;
+use super::cookie::Cookie;
 use super::utils::{get_max_body_size, is_header_value_valid};
 use crate::error::Error;
+use bytes::Bytes;
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,12 +14,9 @@ use std::io::Read;
 /// HTTPステータスコード
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusCode {
-    // 2xx Success
     Ok = 200,
     Created = 201,
     NoContent = 204,
-
-    // 4xx Client Error
     BadRequest = 400,
     Unauthorized = 401,
     Forbidden = 403,
@@ -27,8 +26,6 @@ pub enum StatusCode {
     UnprocessableEntity = 422,
     Locked = 423,
     TooManyRequests = 429,
-
-    // 5xx Server Error
     InternalServerError = 500,
     NotImplemented = 501,
     BadGateway = 502,
@@ -36,12 +33,10 @@ pub enum StatusCode {
 }
 
 impl StatusCode {
-    /// u16の値を取得
     pub fn as_u16(&self) -> u16 {
         *self as u16
     }
 
-    /// 理由句を取得
     pub fn reason_phrase(&self) -> &'static str {
         match self {
             StatusCode::Ok => "OK",
@@ -63,17 +58,14 @@ impl StatusCode {
         }
     }
 
-    /// 成功ステータスかどうか判定
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.as_u16())
     }
 
-    /// クライアントエラーかどうか判定
     pub fn is_client_error(&self) -> bool {
         (400..500).contains(&self.as_u16())
     }
 
-    /// サーバーエラーかどうか判定
     pub fn is_server_error(&self) -> bool {
         (500..600).contains(&self.as_u16())
     }
@@ -86,7 +78,7 @@ impl From<StatusCode> for u16 {
 }
 
 /// HTTPメソッド
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum Method {
     GET,
     POST,
@@ -95,6 +87,31 @@ pub enum Method {
     PATCH,
     HEAD,
     OPTIONS,
+}
+
+impl Method {
+    pub const ALL: [Method; 7] = [
+        Method::GET,
+        Method::POST,
+        Method::PUT,
+        Method::DELETE,
+        Method::PATCH,
+        Method::HEAD,
+        Method::OPTIONS,
+    ];
+
+    pub fn from_str(method: &str) -> Option<Self> {
+        match method.to_uppercase().as_str() {
+            "GET" => Some(Method::GET),
+            "POST" => Some(Method::POST),
+            "PUT" => Some(Method::PUT),
+            "DELETE" => Some(Method::DELETE),
+            "PATCH" => Some(Method::PATCH),
+            "HEAD" => Some(Method::HEAD),
+            "OPTIONS" => Some(Method::OPTIONS),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Method {
@@ -111,86 +128,324 @@ impl fmt::Display for Method {
     }
 }
 
-impl Method {
-    /// 文字列からMethodに変換
-    pub fn from_str(method: &str) -> Option<Self> {
-        match method.to_uppercase().as_str() {
-            "GET" => Some(Method::GET),
-            "POST" => Some(Method::POST),
-            "PUT" => Some(Method::PUT),
-            "DELETE" => Some(Method::DELETE),
-            "PATCH" => Some(Method::PATCH),
-            "HEAD" => Some(Method::HEAD),
-            "OPTIONS" => Some(Method::OPTIONS),
-            _ => None,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct MultiMap {
+    entries: Vec<(String, String)>,
+}
+
+impl MultiMap {
+    fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    fn insert_case_sensitive(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        let key = key.into();
+        self.entries.retain(|(existing, _)| existing != &key);
+        self.entries.push((key, value.into()));
+    }
+
+    fn append_case_sensitive(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.entries.push((key.into(), value.into()));
+    }
+
+    fn get_case_sensitive(&self, key: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(existing, _)| existing == key)
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn get_all_case_sensitive(&self, key: &str) -> Vec<&str> {
+        self.entries
+            .iter()
+            .filter(|(existing, _)| existing == key)
+            .map(|(_, value)| value.as_str())
+            .collect()
+    }
+
+    fn remove_case_sensitive(&mut self, key: &str) -> Vec<String> {
+        let mut removed = Vec::new();
+        self.entries.retain(|(existing, value)| {
+            if existing == key {
+                removed.push(value.clone());
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    }
+
+    fn contains_case_sensitive(&self, key: &str) -> bool {
+        self.entries.iter().any(|(existing, _)| existing == key)
+    }
+
+    fn insert_case_insensitive(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        let key = key.into();
+        self.entries
+            .retain(|(existing, _)| !existing.eq_ignore_ascii_case(&key));
+        self.entries.push((key, value.into()));
+    }
+
+    fn append_case_insensitive(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.entries.push((key.into(), value.into()));
+    }
+
+    fn get_case_insensitive(&self, key: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value.as_str())
+    }
+
+    fn get_all_case_insensitive(&self, key: &str) -> Vec<&str> {
+        self.entries
+            .iter()
+            .filter(|(existing, _)| existing.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value.as_str())
+            .collect()
+    }
+
+    fn remove_case_insensitive(&mut self, key: &str) -> Vec<String> {
+        let mut removed = Vec::new();
+        self.entries.retain(|(existing, value)| {
+            if existing.eq_ignore_ascii_case(key) {
+                removed.push(value.clone());
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    }
+
+    fn contains_case_insensitive(&self, key: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|(existing, _)| existing.eq_ignore_ascii_case(key))
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    fn iter(&self) -> MultiMapIter<'_> {
+        MultiMapIter {
+            inner: self.entries.iter(),
         }
     }
 }
 
+pub struct MultiMapIter<'a> {
+    inner: std::slice::Iter<'a, (String, String)>,
+}
+
+impl<'a> Iterator for MultiMapIter<'a> {
+    type Item = (&'a str, &'a str);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner
+            .next()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+    }
+}
+
+/// 大文字小文字非依存・複数値対応のHTTPヘッダーマップ
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeaderMap {
+    inner: MultiMap,
+}
+
+impl HeaderMap {
+    pub fn new() -> Self {
+        Self {
+            inner: MultiMap::new(),
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.inner.get_case_insensitive(key)
+    }
+
+    pub fn get_all(&self, key: &str) -> Vec<&str> {
+        self.inner.get_all_case_insensitive(key)
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.inner.insert_case_insensitive(key, value);
+    }
+
+    pub fn append(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.inner.append_case_insensitive(key, value);
+    }
+
+    pub fn remove(&mut self, key: &str) -> Vec<String> {
+        self.inner.remove_case_insensitive(key)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.inner.contains_case_insensitive(key)
+    }
+
+    pub fn iter_all(&self) -> MultiMapIter<'_> {
+        self.inner.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+impl<'a> IntoIterator for &'a HeaderMap {
+    type Item = (&'a str, &'a str);
+    type IntoIter = MultiMapIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_all()
+    }
+}
+
+/// 複数値対応のクエリマップ
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct QueryMap {
+    inner: MultiMap,
+}
+
+impl QueryMap {
+    pub fn new() -> Self {
+        Self {
+            inner: MultiMap::new(),
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.inner.get_case_sensitive(key)
+    }
+
+    pub fn get_all(&self, key: &str) -> Vec<&str> {
+        self.inner.get_all_case_sensitive(key)
+    }
+
+    pub fn append(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.inner.append_case_sensitive(key, value);
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.inner.insert_case_sensitive(key, value);
+    }
+
+    pub fn remove(&mut self, key: &str) -> Vec<String> {
+        self.inner.remove_case_sensitive(key)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.inner.contains_case_sensitive(key)
+    }
+
+    pub fn iter(&self) -> MultiMapIter<'_> {
+        self.inner.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn to_owned_pairs(&self) -> Vec<(String, String)> {
+        self.inner.entries.clone()
+    }
+}
+
+impl<'a> IntoIterator for &'a QueryMap {
+    type Item = (&'a str, &'a str);
+    type IntoIter = MultiMapIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 /// HTTPリクエスト
-/// 注意：意図的にCloneトレイトを省略しています（RequestContextの安全性のため）
 #[derive(Debug)]
 pub struct Request {
-    /// HTTPメソッド
     pub method: Method,
-    /// リクエストパス
     pub path: String,
-    /// クエリパラメータ
-    pub query_params: HashMap<String, String>,
-    /// HTTPヘッダー
-    pub headers: HashMap<String, String>,
-    /// リクエストボディ
-    pub body: Option<Vec<u8>>,
-    /// リクエストコンテキスト
+    pub query: QueryMap,
+    pub headers: HeaderMap,
+    pub path_params: HashMap<String, String>,
+    pub cookies: Vec<Cookie>,
+    pub body: Option<Bytes>,
     context: RequestContext,
 }
 
 impl Request {
-    /// 新しいリクエストを作成
     pub fn new(method: Method, path: String) -> Self {
         Self {
             method,
             path,
-            query_params: HashMap::new(),
-            headers: HashMap::new(),
+            query: QueryMap::new(),
+            headers: HeaderMap::new(),
+            path_params: HashMap::new(),
+            cookies: Vec::new(),
             body: None,
             context: RequestContext::new(),
         }
     }
 
-    /// クエリパラメータを追加
     pub fn with_query_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.query_params.insert(key.into(), value.into());
+        self.query.append(key, value);
         self
     }
 
-    /// ヘッダーを追加（Requestではキーを小文字に正規化）
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let k = key.into();
-        let v = value.into();
-        // 値の安全性チェック（CRLF/制御文字を拒否）
-        if !is_header_value_valid(&v) {
+        let key = key.into();
+        let value = value.into();
+        if !is_header_value_valid(&value) {
             log::warn!(
                 "Request::with_header rejected invalid value for '{}': {:?}",
-                k,
-                v
+                key,
+                value
             );
             return self;
         }
-        // リクエスト側のヘッダーキーは大小無視のため小文字化して格納
-        // Responseはこの型を使わないため影響なし
-        let normalized_key = k.to_ascii_lowercase();
-        self.headers.insert(normalized_key, v);
+        self.headers.append(key, value);
         self
     }
 
-    /// ボディを追加
-    pub fn with_body(mut self, body: Vec<u8>) -> Self {
-        self.body = Some(body);
+    pub fn with_path_param(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.path_params.insert(key.into(), value.into());
         self
     }
 
-    /// ボディをJSONとしてパース
+    pub fn with_cookie(mut self, cookie: Cookie) -> Self {
+        self.cookies.push(cookie);
+        self
+    }
+
+    pub fn with_body(mut self, body: impl Into<Bytes>) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+
+    pub fn query_param(&self, key: &str) -> Option<&str> {
+        self.query.get(key)
+    }
+
+    pub fn header(&self, key: &str) -> Option<&str> {
+        self.headers.get(key)
+    }
+
     pub fn json<T: for<'de> Deserialize<'de>>(&self) -> Result<T, Error> {
         if let Some(body) = &self.body {
             serde_json::from_slice(body).map_err(|e| Error::InvalidRequestBody(e.to_string()))
@@ -199,63 +454,50 @@ impl Request {
         }
     }
 
-    /// リクエストコンテキストの不変参照を取得
     pub fn context(&self) -> &RequestContext {
         &self.context
     }
 
-    /// リクエストコンテキストの可変参照を取得
     pub fn context_mut(&mut self) -> &mut RequestContext {
         &mut self.context
     }
 
-    /// リクエストコンテキストを設定
     pub fn with_context(mut self, context: RequestContext) -> Self {
         self.context = context;
         self
     }
 
-    /// コンテキストを除外してリクエストをクローン（安全なデータ複製）
-    /// コンテキストは意図的に新しい空の状態で初期化されます
     pub fn clone_without_context(&self) -> Self {
         #[cfg(debug_assertions)]
-        log::debug!("Request::clone_without_context() called - context will be empty");
+        log::debug!("Request::clone_without_context() called - metadata context will be empty");
 
         Self {
             method: self.method,
             path: self.path.clone(),
-            query_params: self.query_params.clone(),
+            query: self.query.clone(),
             headers: self.headers.clone(),
+            path_params: self.path_params.clone(),
+            cookies: self.cookies.clone(),
             body: self.body.clone(),
-            context: RequestContext::new(),
+            context: self.context.clone_empty(),
         }
     }
 
     /// リクエストボディがgzipエンコードされている場合は解凍する
-    /// Content-Encodingヘッダーをチェックし、gzipの場合のみ処理を実行
-    /// 解凍後のサイズが上限を超える場合はPayloadTooLargeエラーを返す
     pub fn decompress_gzip_body(&mut self) -> Result<(), Error> {
-        // Content-Encodingヘッダーをチェック（小文字で正規化済み）
         if let Some(encoding) = self.headers.get("content-encoding") {
-            if encoding.to_lowercase() == "gzip" {
+            if encoding.eq_ignore_ascii_case("gzip") {
                 if let Some(body_data) = &self.body {
                     let max_body_size = get_max_body_size();
-                    let mut decoder = GzDecoder::new(&body_data[..]);
+                    let mut decoder = GzDecoder::new(body_data.as_ref());
                     let mut decompressed = Vec::new();
-                    let mut buffer = [0u8; 8192]; // 8KBチャンクで読み込み
+                    let mut buffer = [0u8; 8192];
 
                     loop {
                         match decoder.read(&mut buffer) {
-                            Ok(0) => break, // EOF
+                            Ok(0) => break,
                             Ok(n) => {
-                                // 新しいデータを追加する前にサイズをチェック
                                 if decompressed.len() + n > max_body_size {
-                                    log::warn!(
-                                        "Decompressed gzip body too large: {} + {} > {} bytes",
-                                        decompressed.len(),
-                                        n,
-                                        max_body_size
-                                    );
                                     return Err(Error::PayloadTooLarge(format!(
                                         "Decompressed body too large (>{} bytes)",
                                         max_body_size
@@ -263,20 +505,17 @@ impl Request {
                                 }
                                 decompressed.extend_from_slice(&buffer[..n]);
                             }
-                            Err(e) => {
-                                log::warn!("Failed to decompress gzip body: {}", e);
+                            Err(err) => {
                                 return Err(Error::InvalidRequestBody(format!(
                                     "Invalid gzip-encoded request body: {}",
-                                    e
+                                    err
                                 )));
                             }
                         }
                     }
 
-                    // 解凍成功：ボディを更新し、Content-Encodingヘッダーを削除
-                    self.body = Some(decompressed);
+                    self.body = Some(Bytes::from(decompressed));
                     self.headers.remove("content-encoding");
-                    log::debug!("Successfully decompressed gzip request body");
                 }
             }
         }
@@ -285,115 +524,114 @@ impl Request {
 }
 
 /// HTTPレスポンス
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
-    /// HTTPステータスコード
     pub status: u16,
-    /// HTTPヘッダー
-    pub headers: HashMap<String, String>,
-    /// レスポンスボディ
-    pub body: Option<Vec<u8>>,
+    pub headers: HeaderMap,
+    pub cookies: Vec<Cookie>,
+    pub body: Option<Bytes>,
 }
 
 impl Response {
-    /// 新しいレスポンスを作成
     pub fn new(status: u16) -> Self {
-        let mut headers = HashMap::new();
-        // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
+        let mut headers = HeaderMap::new();
         inject_default_security_headers(&mut headers);
         Self {
             status,
             headers,
+            cookies: Vec::new(),
             body: None,
         }
     }
 
-    /// StatusCodeから新しいレスポンスを作成
     pub fn with_status(status: StatusCode) -> Self {
-        let mut headers = HashMap::new();
-        // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
-        inject_default_security_headers(&mut headers);
-        Self {
-            status: status.as_u16(),
-            headers,
-            body: None,
-        }
+        Self::new(status.as_u16())
     }
 
-    /// ヘッダーを追加
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let k = key.into();
-        let v = value.into();
-        if !is_header_value_valid(&v) {
+        let key = key.into();
+        let value = value.into();
+        if !is_header_value_valid(&value) {
             log::warn!(
                 "Response::with_header rejected invalid value for '{}': {:?}",
-                k,
-                v
+                key,
+                value
             );
             return self;
         }
-        self.headers.insert(k, v);
+        self.headers.insert(key, value);
         self
     }
 
-    /// ボディを追加
-    pub fn with_body(mut self, body: Vec<u8>) -> Self {
-        self.body = Some(body);
+    pub fn append_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let key = key.into();
+        let value = value.into();
+        if !is_header_value_valid(&value) {
+            log::warn!(
+                "Response::append_header rejected invalid value for '{}': {:?}",
+                key,
+                value
+            );
+            return self;
+        }
+        self.headers.append(key, value);
         self
     }
 
-    /// JSONをボディとして設定
+    pub fn with_cookie(mut self, cookie: Cookie) -> Self {
+        self.cookies.push(cookie);
+        self
+    }
+
+    pub fn with_body(mut self, body: impl Into<Bytes>) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+
     pub fn json<T: Serialize>(mut self, value: &T) -> Result<Self, Error> {
         let json = serde_json::to_vec(value)
             .map_err(|e| Error::ResponseSerializationError(e.to_string()))?;
-
-        self.headers
-            .insert("Content-Type".to_string(), "application/json".to_string());
-        self.body = Some(json);
+        self.headers.insert("Content-Type", "application/json");
+        self.body = Some(Bytes::from(json));
         Ok(self)
     }
 
-    /// 200 OKレスポンスを作成
     pub fn ok() -> Self {
         Self::new(200)
     }
 
-    /// 201 Createdレスポンスを作成
     pub fn created() -> Self {
         Self::new(201)
     }
 
-    /// 204 No Contentレスポンスを作成
     pub fn no_content() -> Self {
         Self::new(204)
     }
 
-    /// 400 Bad Requestレスポンスを作成
     pub fn bad_request() -> Self {
         Self::new(400)
     }
 
-    /// 401 Unauthorizedレスポンスを作成
     pub fn unauthorized() -> Self {
         Self::new(401)
     }
 
-    /// 403 Forbiddenレスポンスを作成
     pub fn forbidden() -> Self {
         Self::new(403)
     }
 
-    /// 404 Not Foundレスポンスを作成
     pub fn not_found() -> Self {
         Self::new(404)
     }
 
-    /// 500 Internal Server Errorレスポンスを作成
+    pub fn method_not_allowed() -> Self {
+        Self::new(405)
+    }
+
     pub fn internal_server_error() -> Self {
         Self::new(500)
     }
 
-    /// Error型から固定メッセージのレスポンスを生成
     pub fn from_error(error: &crate::error::Error) -> Self {
         let status = error.status_code();
         let message = match status {
@@ -401,6 +639,7 @@ impl Response {
             401 => "Unauthorized",
             403 => "Forbidden",
             404 => "Not Found",
+            405 => "Method Not Allowed",
             413 => "Payload Too Large",
             500 | 502 => "Internal Server Error",
             _ => "Error",
@@ -415,147 +654,135 @@ impl Response {
 #[derive(Debug, Clone)]
 pub struct ResponseBuilder {
     status: u16,
-    headers: HashMap<String, String>,
-    body: Option<Vec<u8>>,
+    headers: HeaderMap,
+    cookies: Vec<Cookie>,
+    body: Option<Bytes>,
 }
 
 impl ResponseBuilder {
-    /// 新しいResponseBuilderを作成（u16ステータスコード）
     pub fn new(status: u16) -> Self {
-        let mut headers = HashMap::new();
-        // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
+        let mut headers = HeaderMap::new();
         inject_default_security_headers(&mut headers);
         Self {
             status,
             headers,
+            cookies: Vec::new(),
             body: None,
         }
     }
 
-    /// 新しいResponseBuilderを作成（StatusCode）
     pub fn with_status(status: StatusCode) -> Self {
-        let mut headers = HashMap::new();
-        // 既定のセキュリティヘッダーを注入（未設定の場合のみ）
-        inject_default_security_headers(&mut headers);
-        Self {
-            status: status.as_u16(),
-            headers,
-            body: None,
-        }
+        Self::new(status.as_u16())
     }
 
-    /// 既存のResponseからResponseBuilderを作成
     pub fn from(response: Response) -> Self {
         Self {
             status: response.status,
             headers: response.headers,
+            cookies: response.cookies,
             body: response.body,
         }
     }
 
-    /// ヘッダーを追加
     pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let k = key.into();
-        let v = value.into();
-        if !is_header_value_valid(&v) {
+        let key = key.into();
+        let value = value.into();
+        if !is_header_value_valid(&value) {
             log::warn!(
                 "ResponseBuilder::header rejected invalid value for '{}': {:?}",
-                k,
-                v
+                key,
+                value
             );
             return self;
         }
-        self.headers.insert(k, v);
+        self.headers.insert(key, value);
         self
     }
 
-    /// 複数のヘッダーを一括追加
-    pub fn headers(mut self, headers: HashMap<String, String>) -> Self {
-        self.headers.extend(headers);
+    pub fn append_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let key = key.into();
+        let value = value.into();
+        if !is_header_value_valid(&value) {
+            log::warn!(
+                "ResponseBuilder::append_header rejected invalid value for '{}': {:?}",
+                key,
+                value
+            );
+            return self;
+        }
+        self.headers.append(key, value);
         self
     }
 
-    /// 標準的なセキュリティヘッダーを一括追加
+    pub fn headers(mut self, headers: HeaderMap) -> Self {
+        for (name, value) in &headers {
+            self.headers.append(name.to_string(), value.to_string());
+        }
+        self
+    }
+
+    pub fn cookie(mut self, cookie: Cookie) -> Self {
+        self.cookies.push(cookie);
+        self
+    }
+
     pub fn security_headers(mut self) -> Self {
-        self.headers
-            .insert("X-Content-Type-Options".to_string(), "nosniff".to_string());
-        self.headers
-            .insert("X-Frame-Options".to_string(), "DENY".to_string());
-        self.headers
-            .insert("X-XSS-Protection".to_string(), "1; mode=block".to_string());
-        self.headers.insert(
-            "Referrer-Policy".to_string(),
-            "strict-origin-when-cross-origin".to_string(),
-        );
-        self.headers.insert(
-            "Content-Security-Policy".to_string(),
-            "default-src 'self'".to_string(),
-        );
+        inject_default_security_headers(&mut self.headers);
         self
     }
 
-    /// JSONボディを設定
     pub fn json<T: Serialize>(mut self, data: &T) -> Result<Self, Error> {
         let json = serde_json::to_vec(data)
             .map_err(|e| Error::ResponseSerializationError(e.to_string()))?;
-
-        self.headers
-            .insert("Content-Type".to_string(), "application/json".to_string());
-        self.body = Some(json);
+        self.headers.insert("Content-Type", "application/json");
+        self.body = Some(Bytes::from(json));
         Ok(self)
     }
 
-    /// ボディを設定
-    pub fn body(mut self, body: Vec<u8>) -> Self {
-        self.body = Some(body);
+    pub fn body(mut self, body: impl Into<Bytes>) -> Self {
+        self.body = Some(body.into());
         self
     }
 
-    /// テキストボディを設定
     pub fn text(mut self, text: impl Into<String>) -> Self {
-        let text = text.into();
-        self.headers.insert(
-            "Content-Type".to_string(),
-            "text/plain; charset=utf-8".to_string(),
-        );
-        self.body = Some(text.into_bytes());
+        self.headers
+            .insert("Content-Type", "text/plain; charset=utf-8");
+        self.body = Some(Bytes::from(text.into()));
         self
     }
 
-    /// HTMLボディを設定
     pub fn html(mut self, html: impl Into<String>) -> Self {
-        let html = html.into();
-        self.headers.insert(
-            "Content-Type".to_string(),
-            "text/html; charset=utf-8".to_string(),
-        );
-        self.body = Some(html.into_bytes());
+        self.headers
+            .insert("Content-Type", "text/html; charset=utf-8");
+        self.body = Some(Bytes::from(html.into()));
         self
     }
 
-    /// Responseを構築
     pub fn build(mut self) -> Response {
-        // build時にも不足があればセキュリティヘッダーを補完
         inject_default_security_headers(&mut self.headers);
         Response {
             status: self.status,
             headers: self.headers,
+            cookies: self.cookies,
             body: self.body,
         }
     }
 }
 
-/// 既定のセキュリティヘッダーを不足時に注入する
-fn inject_default_security_headers(map: &mut HashMap<String, String>) {
-    // ユーザーが上書きしたい場合を尊重し、未設定時のみ入れる
-    map.entry("X-Content-Type-Options".to_string())
-        .or_insert_with(|| "nosniff".to_string());
-    map.entry("X-Frame-Options".to_string())
-        .or_insert_with(|| "DENY".to_string());
-    map.entry("X-XSS-Protection".to_string())
-        .or_insert_with(|| "1; mode=block".to_string());
-    map.entry("Referrer-Policy".to_string())
-        .or_insert_with(|| "strict-origin-when-cross-origin".to_string());
-    map.entry("Content-Security-Policy".to_string())
-        .or_insert_with(|| "default-src 'self'".to_string());
+fn inject_default_security_headers(map: &mut HeaderMap) {
+    if !map.contains_key("X-Content-Type-Options") {
+        map.append("X-Content-Type-Options", "nosniff");
+    }
+    if !map.contains_key("X-Frame-Options") {
+        map.append("X-Frame-Options", "DENY");
+    }
+    if !map.contains_key("X-XSS-Protection") {
+        map.append("X-XSS-Protection", "1; mode=block");
+    }
+    if !map.contains_key("Referrer-Policy") {
+        map.append("Referrer-Policy", "strict-origin-when-cross-origin");
+    }
+    if !map.contains_key("Content-Security-Policy") {
+        map.append("Content-Security-Policy", "default-src 'self'");
+    }
 }

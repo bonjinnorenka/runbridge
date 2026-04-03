@@ -1,7 +1,6 @@
 //! エラーログとセキュリティ関連の機能
 
 use chrono::Local;
-use log::error;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;

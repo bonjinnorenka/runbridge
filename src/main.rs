@@ -3,7 +3,7 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use std::env;
 
-use runbridge::{common::Request, error::Error, handler, RunBridge};
+use runbridge::{common::Request, error::Error};
 
 /// サンプルのアイテム型
 #[derive(Serialize, Deserialize)]
@@ -65,10 +65,10 @@ async fn main() {
     #[cfg(feature = "lambda")]
     {
         info!("Running as AWS Lambda");
-        let app = RunBridge::builder()
-            .handler(handler::get("^/$", health_handler))
-            .handler(handler::get("^/items$", get_items))
-            .handler(handler::post("^/items$", create_item))
+        let app = runbridge::RunBridge::builder()
+            .handler(runbridge::handler::get("/", health_handler))
+            .handler(runbridge::handler::get("/items", get_items))
+            .handler(runbridge::handler::post("/items", create_item))
             .build();
 
         if let Err(e) = runbridge::lambda::run_lambda(app).await {
@@ -92,10 +92,10 @@ async fn main() {
         let host = "0.0.0.0";
         info!("Running as HTTP server on port {}", port);
 
-        let app = RunBridge::builder()
-            .handler(handler::get("^/$", health_handler))
-            .handler(handler::get("^/items$", get_items))
-            .handler(handler::post("^/items$", create_item))
+        let app = runbridge::RunBridge::builder()
+            .handler(runbridge::handler::get("/", health_handler))
+            .handler(runbridge::handler::get("/items", get_items))
+            .handler(runbridge::handler::post("/items", create_item))
             .build();
 
         if let Err(e) = runbridge::cloudrun::run_cloud_run(app, host, port).await {

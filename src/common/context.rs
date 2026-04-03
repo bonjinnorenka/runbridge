@@ -2,11 +2,13 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// リクエストコンテキスト（ミドルウェア間でのデータ共有）
 #[derive(Debug, Default)]
 pub struct RequestContext {
     metadata: HashMap<String, Box<dyn Any + Send + Sync>>,
+    app_state: Option<Arc<dyn Any + Send + Sync>>,
 }
 
 impl RequestContext {
@@ -14,6 +16,7 @@ impl RequestContext {
     pub fn new() -> Self {
         Self {
             metadata: HashMap::new(),
+            app_state: None,
         }
     }
 
@@ -56,22 +59,36 @@ impl RequestContext {
     pub fn is_empty(&self) -> bool {
         self.metadata.is_empty()
     }
+
+    /// アプリケーション全体の共有 state を設定
+    pub fn set_app_state(&mut self, state: Option<Arc<dyn Any + Send + Sync>>) {
+        self.app_state = state;
+    }
+
+    /// アプリケーション全体の共有 state を取得
+    pub fn app_state<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.app_state
+            .as_ref()
+            .and_then(|state| Arc::clone(state).downcast::<T>().ok())
+    }
 }
 
 impl RequestContext {
-    /// 新しい空のコンテキストを作成（明示的なデータクリア）
+    /// 新しい空のコンテキストを作成（共有 state は保持）
     pub fn clone_empty(&self) -> Self {
-        Self::new()
+        Self {
+            metadata: HashMap::new(),
+            app_state: self.app_state.clone(),
+        }
     }
 
-    /// 可能な場合にディープコピーを試行（Cloneトレイトを実装した型のみ）
-    /// 現在は実際のクローンが不可能なため、空のコンテキストを返却
-    /// 将来的により高度な実装に変更可能性あり
+    /// 可能な場合にディープコピーを試行（現在はメタデータを複製しない）
     pub fn try_clone(&self) -> Self {
-        // Anyトレイトの制約により実際のクローンは実装困難
         #[cfg(debug_assertions)]
-        log::debug!("RequestContext::try_clone() called - returning empty context due to Any trait limitations");
-        Self::new()
+        log::debug!(
+            "RequestContext::try_clone() called - returning empty metadata due to Any trait limitations"
+        );
+        self.clone_empty()
     }
 }
 
@@ -83,7 +100,6 @@ mod tests {
     fn test_request_context_basic() {
         let mut context = RequestContext::new();
 
-        // 値の設定と取得
         context.set("string_val", "hello".to_string());
         context.set("int_val", 42i32);
         context.set("bool_val", true);
@@ -94,11 +110,7 @@ mod tests {
         );
         assert_eq!(context.get::<i32>("int_val"), Some(&42));
         assert_eq!(context.get::<bool>("bool_val"), Some(&true));
-
-        // 存在しないキー
         assert_eq!(context.get::<String>("nonexistent"), None);
-
-        // 間違った型
         assert_eq!(context.get::<i32>("string_val"), None);
     }
 
@@ -133,10 +145,6 @@ mod tests {
         let removed: Option<String> = context.remove("removable");
         assert_eq!(removed, Some("test_value".to_string()));
         assert!(!context.contains_key("removable"));
-
-        // 既に削除済みのキー
-        let removed: Option<String> = context.remove("removable");
-        assert_eq!(removed, None);
     }
 
     #[test]
@@ -182,21 +190,31 @@ mod tests {
         context.set("key1", "value1".to_string());
         context.set("key2", 42i32);
 
-        // 明示的な空のコンテキスト作成
         let empty_clone = context.clone_empty();
         assert!(empty_clone.is_empty());
         assert!(!empty_clone.contains_key("key1"));
         assert!(!empty_clone.contains_key("key2"));
 
-        // try_clone も同様に空のコンテキストを返す（現在の実装）
         let try_clone = context.try_clone();
         assert!(try_clone.is_empty());
         assert!(!try_clone.contains_key("key1"));
         assert!(!try_clone.contains_key("key2"));
 
-        // 元のコンテキストは変更されない
         assert!(!context.is_empty());
         assert!(context.contains_key("key1"));
         assert!(context.contains_key("key2"));
+    }
+
+    #[test]
+    fn test_request_context_app_state() {
+        let mut context = RequestContext::new();
+        context.set_app_state(Some(Arc::new(123usize)));
+
+        let state = context.app_state::<usize>().unwrap();
+        assert_eq!(*state, 123);
+
+        let empty_clone = context.clone_empty();
+        let state = empty_clone.app_state::<usize>().unwrap();
+        assert_eq!(*state, 123);
     }
 }

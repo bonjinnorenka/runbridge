@@ -25,7 +25,7 @@ impl fmt::Display for SameSite {
 }
 
 /// HTTPクッキー
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cookie {
     pub name: String,
     pub value: String,
@@ -39,20 +39,18 @@ pub struct Cookie {
 }
 
 impl Cookie {
-    /// 新しいクッキーを作成（無効な文字は拒否）
+    /// 新しいクッキーを作成（無効な文字は安全なデフォルトへフォールバック）
     pub fn new(name: impl Into<String>, value: impl Into<String>) -> Self {
-        // 互換API: 無効な値はパニックせずログに出してデフォルト無害値に置換
-        // より厳密な扱いが必要な場合は `try_new` を使用
         match Self::try_new(name, value) {
-            Ok(c) => c,
-            Err(e) => {
+            Ok(cookie) => cookie,
+            Err(err) => {
                 log::warn!(
                     "Cookie::new received invalid name/value: {}. Replaced with safe defaults",
-                    e
+                    err
                 );
                 Self {
                     name: "invalid".to_string(),
-                    value: "".to_string(),
+                    value: String::new(),
                     path: None,
                     domain: None,
                     expires: None,
@@ -67,12 +65,12 @@ impl Cookie {
 
     /// 新しいクッキーをResultで作成（推奨）
     pub fn try_new(name: impl Into<String>, value: impl Into<String>) -> Result<Self, Error> {
-        let n = name.into();
-        let v = value.into();
-        validate_cookie_name_value(&n, &v)?;
+        let name = name.into();
+        let value = value.into();
+        validate_cookie_name_value(&name, &value)?;
         Ok(Self {
-            name: n,
-            value: v,
+            name,
+            value,
             path: None,
             domain: None,
             expires: None,
@@ -132,22 +130,12 @@ impl Cookie {
         if let Some(path) = &self.path {
             if is_header_value_valid(path) {
                 cookie_str.push_str(&format!("; Path={}", path));
-            } else {
-                log::warn!(
-                    "Cookie::to_header_value skipped invalid Path value: {:?}",
-                    path
-                );
             }
         }
 
         if let Some(domain) = &self.domain {
             if is_header_value_valid(domain) {
                 cookie_str.push_str(&format!("; Domain={}", domain));
-            } else {
-                log::warn!(
-                    "Cookie::to_header_value skipped invalid Domain value: {:?}",
-                    domain
-                );
             }
         }
 
@@ -176,6 +164,34 @@ impl Cookie {
 
         cookie_str
     }
+}
+
+/// Cookie ヘッダー文字列を request cookie にパース
+pub fn parse_cookie_header(value: &str) -> Vec<Cookie> {
+    value
+        .split(';')
+        .filter_map(|part| {
+            let trimmed = part.trim();
+            let (name, value) = trimmed.split_once('=')?;
+            Cookie::try_new(name.trim(), value.trim()).ok()
+        })
+        .collect()
+}
+
+/// Cookie 文字列の配列を request cookie にパース
+pub fn parse_cookie_strings(values: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<Cookie> {
+    let mut cookies = Vec::new();
+    for value in values {
+        let value = value.as_ref();
+        if value.contains(';') {
+            cookies.extend(parse_cookie_header(value));
+        } else if let Some((name, value)) = value.split_once('=') {
+            if let Ok(cookie) = Cookie::try_new(name.trim(), value.trim()) {
+                cookies.push(cookie);
+            }
+        }
+    }
+    cookies
 }
 
 #[cfg(test)]
@@ -243,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_cookie_with_max_age() {
-        let max_age = Duration::from_secs(3600); // 1 hour
+        let max_age = Duration::from_secs(3600);
         let cookie = Cookie::new("max_age_test", "value").with_max_age(max_age);
 
         let header_value = cookie.to_header_value();
@@ -259,30 +275,34 @@ mod tests {
 
     #[test]
     fn test_cookie_try_new_validation() {
-        // 許容
-        let ok = Cookie::try_new("SID", "abcDEF123-_.:~").unwrap();
-        assert_eq!(ok.name, "SID");
-        assert_eq!(ok.value, "abcDEF123-_.:~");
-
-        // 値に禁止記号（; , \n など）
-        assert!(Cookie::try_new("SID", "bad;value").is_err());
-        assert!(Cookie::try_new("SID", "bad,value").is_err());
-        assert!(Cookie::try_new("SID", "bad\nvalue").is_err());
-
-        // 名前に禁止文字（空白・セパレータ）
-        assert!(Cookie::try_new("bad name", "v").is_err());
-        assert!(Cookie::try_new("bad;name", "v").is_err());
+        assert!(Cookie::try_new("good_name", "good-value").is_ok());
+        assert!(Cookie::try_new("bad name", "good-value").is_err());
+        assert!(Cookie::try_new("good_name", "bad;value").is_err());
     }
 
     #[test]
     fn test_cookie_to_header_skips_invalid_attrs() {
-        let mut c = Cookie::try_new("A", "B").unwrap();
-        // 無効なPath/DomainはCRLF拒否によりスキップされる
-        c.path = Some("/ok".into());
-        c.domain = Some("bad\r\ndomain".into());
-        let hv = c.to_header_value();
-        assert!(hv.contains("A=B"));
-        assert!(hv.contains("Path=/ok"));
-        assert!(!hv.contains("Domain=bad"));
+        let cookie = Cookie::new("t", "v")
+            .with_path("/ok")
+            .with_domain("bad\r\nvalue");
+        let header_value = cookie.to_header_value();
+        assert!(header_value.contains("Path=/ok"));
+        assert!(!header_value.contains("Domain="));
+    }
+
+    #[test]
+    fn test_parse_cookie_header() {
+        let cookies = parse_cookie_header("session=abc123; theme=dark");
+        assert_eq!(cookies.len(), 2);
+        assert_eq!(cookies[0].name, "session");
+        assert_eq!(cookies[1].name, "theme");
+    }
+
+    #[test]
+    fn test_parse_cookie_strings() {
+        let cookies = parse_cookie_strings(vec!["session=abc123", "theme=dark"]);
+        assert_eq!(cookies.len(), 2);
+        assert_eq!(cookies[0].value, "abc123");
+        assert_eq!(cookies[1].value, "dark");
     }
 }

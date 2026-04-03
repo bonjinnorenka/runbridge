@@ -1,7 +1,7 @@
 //! 共通ユーティリティ関数群（URLデコード、クエリ解析、環境設定 等）
 
+use super::http::QueryMap;
 use crate::error::Error;
-use std::collections::HashMap;
 use std::env;
 
 /// URLエンコーディングのデコード関数
@@ -38,8 +38,8 @@ fn from_hex(byte: u8) -> Option<u8> {
 }
 
 /// クエリ文字列をパースしてURLデコードを行う共通関数
-pub fn parse_query_string(query_string: &str) -> HashMap<String, String> {
-    let mut params = HashMap::new();
+pub fn parse_query_string(query_string: &str) -> QueryMap {
+    let mut params = QueryMap::new();
 
     if query_string.is_empty() {
         return params;
@@ -51,7 +51,7 @@ pub fn parse_query_string(query_string: &str) -> HashMap<String, String> {
             let value = parts.next().unwrap_or("");
             let decoded_key = percent_decode(key);
             let decoded_value = percent_decode(value);
-            params.insert(decoded_key, decoded_value);
+            params.append(decoded_key, decoded_value);
         }
     }
 
@@ -61,7 +61,7 @@ pub fn parse_query_string(query_string: &str) -> HashMap<String, String> {
 /// リクエストボディの最大サイズ（バイト）を取得する
 /// 優先順位: 環境変数 `RUNBRIDGE_MAX_BODY_SIZE` -> デフォルト 5MB
 pub fn get_max_body_size() -> usize {
-    const DEFAULT_MAX_SIZE: usize = 5 * 1024 * 1024; // 5MB
+    const DEFAULT_MAX_SIZE: usize = 5 * 1024 * 1024;
     env::var("RUNBRIDGE_MAX_BODY_SIZE")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -70,10 +70,8 @@ pub fn get_max_body_size() -> usize {
 
 /// ヘッダー値に使用可能な文字かを判定（CRLF・制御文字を拒否）
 pub fn is_header_value_valid(value: &str) -> bool {
-    // RFC的にはobs-text等もありうるが、ここでは保守的にUS-ASCII可視範囲に限定し、
-    // 制御文字(0x00-0x1F, 0x7F)およびCR/LFを拒否する
     if value.is_empty() {
-        return true; // 空は許容（ヘッダー仕様上も可）
+        return true;
     }
     value.chars().all(|c| {
         let code = c as u32;
@@ -81,13 +79,12 @@ pub fn is_header_value_valid(value: &str) -> bool {
     })
 }
 
-/// ヘッダー名が安全なトークンかを簡易判定（使わないが将来拡張用）
+/// ヘッダー名が安全なトークンかを簡易判定
 #[allow(dead_code)]
 pub fn is_header_name_valid(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    // token = 1*tchar, tchar = "!#$%&'*+-.^_`|~" or DIGIT or ALPHA
     name.chars().all(|c| {
         c.is_ascii_alphanumeric()
             || matches!(
@@ -115,26 +112,39 @@ pub fn is_cookie_name_valid(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    // tokenと同等: 制御/空白とセパレータを除外
     const FORBIDDEN: &[char] = &[
-        '(', ')', '<', '>', '@', ',', ';', ':', '\\', '"', '/', '[', ']', '?', '{', '}', ' ', '\t',
-        '\r', '\n',
+        '(',
+        ')',
+        '<',
+        '>',
+        '@',
+        ',',
+        ';',
+        ':',
+        '\\',
+        '"',
+        '/',
+        '[',
+        ']',
+        '?',
+        '{',
+        '}',
+        ' ',
+        '\t',
+        '\r',
+        '\n',
     ];
     name.chars()
         .all(|c| c.is_ascii() && !c.is_ascii_control() && !FORBIDDEN.contains(&c))
 }
 
 /// Cookie値が安全か（RFC6265 cookie-octetの簡易版）
-/// 許容: 0x21, 0x23-0x2B, 0x2D-0x3A, 0x3C-0x5B, 0x5D-0x7E
 pub fn is_cookie_value_valid(value: &str) -> bool {
     value.chars().all(|c| {
         let b = c as u32;
-        matches!(b,
-            0x21 |
-            0x23..=0x2B |
-            0x2D..=0x3A |
-            0x3C..=0x5B |
-            0x5D..=0x7E
+        matches!(
+            b,
+            0x21 | 0x23..=0x2B | 0x2D..=0x3A | 0x3C..=0x5B | 0x5D..=0x7E
         )
     })
 }
@@ -174,24 +184,20 @@ mod tests {
         let query = "name=John&age=30&city=Tokyo";
         let params = parse_query_string(query);
 
-        assert_eq!(params.get("name"), Some(&"John".to_string()));
-        assert_eq!(params.get("age"), Some(&"30".to_string()));
-        assert_eq!(params.get("city"), Some(&"Tokyo".to_string()));
+        assert_eq!(params.get("name"), Some("John"));
+        assert_eq!(params.get("age"), Some("30"));
+        assert_eq!(params.get("city"), Some("Tokyo"));
     }
 
     #[test]
     fn test_parse_query_string_url_encoding() {
-        // URLエンコードされたクエリ文字列
         let query =
             "name=%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A&city=Tokyo%20Station&lang=ja%2Den";
         let params = parse_query_string(query);
 
-        // "あいうえお"（UTF-8でURLエンコード）
-        assert_eq!(params.get("name"), Some(&"あいうえお".to_string()));
-        // スペースが%20でエンコードされている
-        assert_eq!(params.get("city"), Some(&"Tokyo Station".to_string()));
-        // ハイフンが%2Dでエンコードされている
-        assert_eq!(params.get("lang"), Some(&"ja-en".to_string()));
+        assert_eq!(params.get("name"), Some("あいうえお"));
+        assert_eq!(params.get("city"), Some("Tokyo Station"));
+        assert_eq!(params.get("lang"), Some("ja-en"));
     }
 
     #[test]
@@ -199,7 +205,7 @@ mod tests {
         assert_eq!(percent_decode("Hello%20World"), "Hello World");
         assert_eq!(percent_decode("test%2Bvalue"), "test+value");
         assert_eq!(percent_decode("normal"), "normal");
-        assert_eq!(percent_decode("plus+space"), "plus space"); // +もスペースに変換
+        assert_eq!(percent_decode("plus+space"), "plus space");
         assert_eq!(
             percent_decode("%E3%81%82%E3%81%84%E3%81%86%E3%81%88%E3%81%8A"),
             "あいうえお"

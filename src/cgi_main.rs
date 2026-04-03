@@ -4,7 +4,7 @@
 
 use env_logger::Env;
 use log::{error, info};
-use runbridge::{cgi, RunBridge};
+use runbridge::{cgi, handler, Method, RunBridge};
 
 // サンプルハンドラの実装
 mod sample_handler;
@@ -21,9 +21,26 @@ async fn main() {
 
     // アプリケーションの構築
     let app = RunBridge::builder()
-        .handler(sample_handler::HelloHandler::new())
-        .handler(sample_handler::EchoHandler::new())
-        .handler(sample_handler::PanicHandler::new())
+        .handler(handler::route(
+            Method::GET,
+            "/",
+            sample_handler::HelloHandler::new(),
+        ))
+        .handler(handler::route(
+            Method::GET,
+            "/echo",
+            sample_handler::EchoHandler::new(),
+        ))
+        .handler(handler::route(
+            Method::POST,
+            "/echo",
+            sample_handler::EchoHandler::new(),
+        ))
+        .handler(handler::route(
+            Method::GET,
+            "/panic",
+            sample_handler::PanicHandler::new(),
+        ))
         .build();
 
     // CGI処理の実行

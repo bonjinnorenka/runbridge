@@ -2,15 +2,15 @@
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use runbridge::{
-        common::{Method, Request, Response},
+        common::{Middleware, Next, Request, Response},
         error::Error,
-        handler, RunBridge,
+        handler, FromRequestParts, Handler, Method, RunBridge,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
 
-    // テスト用のデータ構造
     #[derive(Serialize, Deserialize, Debug, PartialEq)]
     struct ItemRequest {
         name: String,
@@ -25,11 +25,12 @@ mod tests {
         created_at: String,
     }
 
-    // GET ハンドラー
     fn get_item_handler(req: Request) -> Result<ItemResponse, Error> {
-        // パスからIDを抽出 (例: /items/123 -> 123)
-        let path_parts: Vec<&str> = req.path.split('/').collect();
-        let id = path_parts.last().unwrap_or(&"unknown").to_string();
+        let id = req
+            .path_params
+            .get("id")
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
 
         Ok(ItemResponse {
             id,
@@ -39,7 +40,6 @@ mod tests {
         })
     }
 
-    // POST ハンドラー
     fn create_item_handler(_req: Request, item: ItemRequest) -> Result<ItemResponse, Error> {
         Ok(ItemResponse {
             id: "new_item_123".to_string(),
@@ -51,88 +51,99 @@ mod tests {
 
     #[tokio::test]
     async fn test_app_routing() {
-        // アプリケーションの構築
         let app = RunBridge::builder()
-            .handler(handler::get(r"^/items/[^/]+$", get_item_handler))
+            .handler(handler::get("/items/{id}", get_item_handler))
             .handler(handler::post("/items", create_item_handler))
             .build();
 
-        // GETリクエストのテスト
         let get_req = Request::new(Method::GET, "/items/123".to_string());
-        let handler = app
-            .find_handler(&get_req.path, &get_req.method)
-            .expect("Handler not found");
-        let get_result = handler.handle(get_req).await.expect("Handler failed");
-
+        let get_result = app.handle_request(get_req).await;
         assert_eq!(get_result.status, 200);
-        let body_str = String::from_utf8(get_result.body.unwrap()).unwrap();
+        let body_str = String::from_utf8(get_result.body.unwrap().to_vec()).unwrap();
         let response: ItemResponse = serde_json::from_str(&body_str).unwrap();
         assert_eq!(response.id, "123");
 
-        // POSTリクエストのテスト
-        let req_data = ItemRequest {
-            name: "New Item".to_string(),
-            description: Some("This is a new item".to_string()),
-        };
-        let json_body = serde_json::to_vec(&req_data).unwrap();
         let post_req = Request::new(Method::POST, "/items".to_string())
             .with_header("Content-Type", "application/json")
-            .with_body(json_body);
+            .with_body(
+                serde_json::to_vec(&ItemRequest {
+                    name: "New Item".to_string(),
+                    description: Some("This is a new item".to_string()),
+                })
+                .unwrap(),
+            );
 
-        let handler = app
-            .find_handler(&post_req.path, &post_req.method)
-            .expect("Handler not found");
-        let post_result = handler.handle(post_req).await.expect("Handler failed");
-
+        let post_result = app.handle_request(post_req).await;
         assert_eq!(post_result.status, 200);
-        let body_str = String::from_utf8(post_result.body.unwrap()).unwrap();
+        let body_str = String::from_utf8(post_result.body.unwrap().to_vec()).unwrap();
         let response: ItemResponse = serde_json::from_str(&body_str).unwrap();
         assert_eq!(response.name, "New Item");
         assert_eq!(response.id, "new_item_123");
     }
 
     #[tokio::test]
-    async fn test_nonexistent_route() {
-        // アプリケーションの構築
+    async fn test_method_not_allowed_and_allow_header() {
         let app = RunBridge::builder()
-            .handler(handler::get("/items", get_item_handler))
+            .handler(handler::get("/items/{id}", get_item_handler))
             .build();
 
-        // 存在しないパスへのリクエスト
-        let req = Request::new(Method::GET, "/nonexistent".to_string());
-        let handler = app.find_handler(&req.path, &req.method);
+        let req = Request::new(Method::POST, "/items/123".to_string());
+        let response = app.handle_request(req).await;
 
-        assert!(
-            handler.is_none(),
-            "Handler should not be found for nonexistent path"
-        );
+        assert_eq!(response.status, 405);
+        assert_eq!(response.headers.get("Allow"), Some("GET"));
     }
 
-    // ミドルウェアのテスト
+    #[tokio::test]
+    async fn test_fallback_for_not_found_only() {
+        let app = RunBridge::builder()
+            .handler(handler::get("/items/{id}", get_item_handler))
+            .fallback(handler::fallback(|req: Request| {
+                Ok(Response::not_found().with_body(format!("fallback: {}", req.path).into_bytes()))
+            }))
+            .build();
+
+        let not_found = app
+            .handle_request(Request::new(Method::GET, "/missing".to_string()))
+            .await;
+        assert_eq!(not_found.status, 404);
+        assert_eq!(
+            String::from_utf8(not_found.body.unwrap().to_vec()).unwrap(),
+            "fallback: /missing"
+        );
+
+        let method_not_allowed = app
+            .handle_request(Request::new(Method::POST, "/items/123".to_string()))
+            .await;
+        assert_eq!(method_not_allowed.status, 405);
+    }
+
     struct TestMiddleware {
         name: String,
     }
 
-    #[async_trait::async_trait]
-    impl runbridge::common::Middleware for TestMiddleware {
-        async fn pre_process(&self, mut req: Request) -> Result<Request, Error> {
-            // ヘッダーを追加
-            req.headers
-                .insert("X-Middleware".to_string(), self.name.clone());
-            Ok(req)
+    #[async_trait]
+    impl Middleware for TestMiddleware {
+        async fn handle(&self, req: Request, next: Next<'_>) -> Result<Response, Error> {
+            let mut response = next.run(req).await?;
+            response
+                .headers
+                .append("X-Middleware-Response", self.name.clone());
+            Ok(response)
         }
+    }
 
-        async fn post_process(&self, mut res: Response) -> Result<Response, Error> {
-            // ヘッダーを追加
-            res.headers
-                .insert("X-Middleware-Response".to_string(), self.name.clone());
-            Ok(res)
+    struct ShortCircuitMiddleware;
+
+    #[async_trait]
+    impl Middleware for ShortCircuitMiddleware {
+        async fn handle(&self, _req: Request, _next: Next<'_>) -> Result<Response, Error> {
+            Ok(Response::unauthorized().with_body("blocked".as_bytes().to_vec()))
         }
     }
 
     #[tokio::test]
-    async fn test_middleware() {
-        // ミドルウェア付きのアプリケーションを構築
+    async fn test_middleware_chain() {
         let app = RunBridge::builder()
             .middleware(TestMiddleware {
                 name: "Test1".to_string(),
@@ -140,35 +151,73 @@ mod tests {
             .middleware(TestMiddleware {
                 name: "Test2".to_string(),
             })
-            .handler(handler::get("/test", |_| Ok("Test Response")))
+            .handler(handler::get("/test", |_| {
+                Ok(Response::ok().with_body("ok".as_bytes().to_vec()))
+            }))
             .build();
 
-        // リクエストの作成
-        let req = Request::new(Method::GET, "/test".to_string());
+        let response = app
+            .handle_request(Request::new(Method::GET, "/test".to_string()))
+            .await;
 
-        // ハンドラーの取得と実行
-        let handler = app
-            .find_handler(&req.path, &req.method)
-            .expect("Handler not found");
-
-        // リクエスト前処理（ミドルウェア適用）
-        let mut req_processed = req;
-        for middleware in app.middlewares() {
-            req_processed = middleware.pre_process(req_processed).await.unwrap();
-        }
-
-        // ハンドラー実行
-        let mut response = handler.handle(req_processed).await.unwrap();
-
-        // レスポンス後処理（ミドルウェア適用）
-        for middleware in app.middlewares() {
-            response = middleware.post_process(response).await.unwrap();
-        }
-
-        // ミドルウェアが適切に適用されたか検証
+        assert_eq!(response.status, 200);
         assert_eq!(
-            response.headers.get("X-Middleware-Response").unwrap(),
-            "Test2"
+            response.headers.get_all("X-Middleware-Response"),
+            vec!["Test2", "Test1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_middleware_short_circuit() {
+        let app = RunBridge::builder()
+            .middleware(ShortCircuitMiddleware)
+            .handler(handler::get("/test", |_| {
+                Ok(Response::ok().with_body("ok".as_bytes().to_vec()))
+            }))
+            .build();
+
+        let response = app
+            .handle_request(Request::new(Method::GET, "/test".to_string()))
+            .await;
+        assert_eq!(response.status, 401);
+        assert_eq!(String::from_utf8(response.body.unwrap().to_vec()).unwrap(), "blocked");
+    }
+
+    #[derive(Clone)]
+    struct AppState {
+        prefix: String,
+    }
+
+    struct StateEchoHandler;
+
+    #[async_trait]
+    impl Handler for StateEchoHandler {
+        async fn handle(&self, req: Request) -> Result<Response, Error> {
+            let parts = handler::RequestParts::from(&req);
+            let state = handler::State::<AppState>::from_request_parts(&parts)
+                .await
+                .map_err(|err| Error::InternalServerError(err.message().to_string()))?;
+            Ok(Response::ok().with_body(format!("{}{}", state.prefix, req.path).into_bytes()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_state_extractor_via_builder_state() {
+        let app = RunBridge::builder()
+            .state(Arc::new(AppState {
+                prefix: "state:".to_string(),
+            }))
+            .handler(handler::route(Method::GET, "/state", StateEchoHandler))
+            .build();
+
+        let response = app
+            .handle_request(Request::new(Method::GET, "/state".to_string()))
+            .await;
+
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            String::from_utf8(response.body.unwrap().to_vec()).unwrap(),
+            "state:/state"
         );
     }
 }

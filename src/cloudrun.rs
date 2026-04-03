@@ -1,88 +1,68 @@
 //! Google Cloud Run向けの実装
 
-use actix_web::http::header::HeaderMap;
+use actix_web::http::header::HeaderMap as ActixHeaderMap;
 use actix_web::web::Bytes;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
-use log::{error, info, warn};
-use std::collections::HashMap;
+use log::{info, warn};
 use std::sync::Arc;
 
-use crate::common::{get_max_body_size, parse_query_string, Method, Request, Response};
+use crate::common::{
+    get_max_body_size, parse_cookie_header, parse_query_string, HeaderMap, Method, Request,
+    Response,
+};
 use crate::RunBridge;
 
-/// actix-webのHeaderMapから共通形式のヘッダーに変換
-fn convert_headers(headers: &HeaderMap) -> HashMap<String, String> {
-    let mut result = HashMap::new();
+fn convert_headers(headers: &ActixHeaderMap) -> HeaderMap {
+    let mut result = HeaderMap::new();
 
-    for (key, value) in headers.iter() {
-        if let Ok(value_str) = value.to_str() {
-            // Request取り込み時は小文字キーに正規化
-            result.insert(key.as_str().to_ascii_lowercase(), value_str.to_string());
+    for key in headers.keys() {
+        for value in headers.get_all(key) {
+            if let Ok(value_str) = value.to_str() {
+                result.append(key.as_str().to_string(), value_str.to_string());
+            }
         }
     }
 
     result
 }
 
-/// actix-webのリクエストから共通形式のRequestに変換
 async fn convert_request(req: &HttpRequest, path: String, body: Option<Bytes>) -> Request {
-    // HTTPメソッドの取得
-    let method = match req.method().as_str() {
-        "GET" => Method::GET,
-        "POST" => Method::POST,
-        "PUT" => Method::PUT,
-        "DELETE" => Method::DELETE,
-        "PATCH" => Method::PATCH,
-        "HEAD" => Method::HEAD,
-        "OPTIONS" => Method::OPTIONS,
-        _ => Method::GET,
-    };
-
-    // ヘッダーの変換
+    let method = Method::from_str(req.method().as_str()).unwrap_or(Method::GET);
     let headers = convert_headers(req.headers());
-
-    // クエリパラメータの取得（URLデコード対応）
-    let query_params = parse_query_string(req.query_string());
-
-    // リクエストボディの処理
-    let body = body.map(|b| b.to_vec());
+    let cookies = headers
+        .get("cookie")
+        .map(parse_cookie_header)
+        .unwrap_or_default();
+    let query = parse_query_string(req.query_string());
+    let body = body.map(|body| body.to_vec().into());
 
     let mut request = Request::new(method, path);
-    request.query_params = query_params;
+    request.query = query;
     request.headers = headers;
+    request.cookies = cookies;
     request.body = body;
 
-    // gzipボディを解凍（必要な場合のみ）
-    if let Err(e) = request.decompress_gzip_body() {
-        warn!("Failed to decompress gzip body in Cloud Run: {}", e);
+    if let Err(err) = request.decompress_gzip_body() {
+        warn!("Failed to decompress gzip body in Cloud Run: {}", err);
     }
 
     request
 }
 
-/// 共通形式のResponseからactix-webのHttpResponseに変換
 fn convert_to_http_response(response: Response) -> HttpResponse {
-    let mut builder = match response.status {
-        200 => HttpResponse::Ok(),
-        201 => HttpResponse::Created(),
-        204 => HttpResponse::NoContent(),
-        400 => HttpResponse::BadRequest(),
-        401 => HttpResponse::Unauthorized(),
-        403 => HttpResponse::Forbidden(),
-        404 => HttpResponse::NotFound(),
-        500 => HttpResponse::InternalServerError(),
-        _ => HttpResponse::build(
-            actix_web::http::StatusCode::from_u16(response.status)
-                .unwrap_or(actix_web::http::StatusCode::OK),
-        ),
-    };
+    let mut builder = HttpResponse::build(
+        actix_web::http::StatusCode::from_u16(response.status)
+            .unwrap_or(actix_web::http::StatusCode::INTERNAL_SERVER_ERROR),
+    );
 
-    // ヘッダーの設定
-    for (key, value) in response.headers {
-        builder.insert_header((key, value));
+    for (key, value) in &response.headers {
+        builder.append_header((key, value));
     }
 
-    // ボディの設定
+    for cookie in response.cookies {
+        builder.append_header(("Set-Cookie", cookie.to_header_value()));
+    }
+
     if let Some(body) = response.body {
         builder.body(body)
     } else {
@@ -90,96 +70,39 @@ fn convert_to_http_response(response: Response) -> HttpResponse {
     }
 }
 
-/// RunBridgeアプリケーションをハンドリングするactix-web用ハンドラー
 async fn handle_request(
     req: HttpRequest,
     body: Option<Bytes>,
     app: web::Data<Arc<RunBridge>>,
 ) -> HttpResponse {
     let path = req.uri().path().to_string();
-    let method_str = req.method().as_str();
-    info!("Received request: {} {}", method_str, path);
+    info!("Received request: {} {}", req.method(), path);
 
-    // ボディサイズ上限チェック（共通設定）
-    if let Some(ref b) = body {
+    if let Some(ref body) = body {
         let max = get_max_body_size();
-        if b.len() > max {
-            warn!("Request body too large: {} bytes (limit {})", b.len(), max);
+        if body.len() > max {
+            warn!("Request body too large: {} bytes (limit {})", body.len(), max);
             return HttpResponse::PayloadTooLarge().finish();
         }
     }
 
-    // リクエストの変換
-    let request = convert_request(&req, path.clone(), body).await;
-
-    // ハンドラーの検索
-    let handler = match app.find_handler(&path, &request.method) {
-        Some(handler) => handler,
-        None => {
-            error!("Route not found: {} {}", request.method, path);
-            return convert_to_http_response(
-                Response::not_found().with_body("Not Found".as_bytes().to_vec()),
-            );
-        }
-    };
-
-    // ミドルウェアの適用（リクエスト前処理）
-    let mut req_processed = request;
-    for middleware in app.middlewares() {
-        match middleware.pre_process(req_processed).await {
-            Ok(processed) => req_processed = processed,
-            Err(e) => {
-                error!("Middleware error: {}", e);
-                return convert_to_http_response(Response::from_error(&e));
-            }
-        }
-    }
-
-    // ハンドラーの実行
-    let handler_result = handler.handle(req_processed).await;
-
-    // レスポンスの処理
-    let response = match handler_result {
-        Ok(res) => res,
-        Err(e) => {
-            error!("Handler error: {}", e);
-            Response::from_error(&e)
-        }
-    };
-
-    // ミドルウェアの適用（レスポンス後処理）
-    let mut res_processed = response;
-    for middleware in app.middlewares() {
-        match middleware.post_process(res_processed).await {
-            Ok(processed) => res_processed = processed,
-            Err(e) => {
-                error!("Middleware error in post-processing: {}", e);
-                res_processed = Response::from_error(&e);
-            }
-        }
-    }
-
-    // レスポンスの変換と返却
-    convert_to_http_response(res_processed)
+    let request = convert_request(&req, path, body).await;
+    let response = app.handle_request(request).await;
+    convert_to_http_response(response)
 }
 
-/// アプリケーションをCloud Run/HTTPサーバーとして実行
 pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Result<()> {
     info!("Starting HTTP server on {}:{}", host, port);
 
-    // アプリケーションをArcで包んでスレッド間で共有可能にする
     let app_data = Arc::new(app);
     let max_body = get_max_body_size();
 
-    // HTTPサーバーの構築と起動
     HttpServer::new(move || {
         let app_data = web::Data::new(app_data.clone());
 
         App::new()
             .app_data(app_data.clone())
-            // リクエストボディサイズの上限（共通設定）
             .app_data(web::PayloadConfig::new(max_body))
-            // すべてのリクエストをキャッチする汎用ハンドラー
             .route(
                 "/{path:.*}",
                 web::get().to(|req, app: web::Data<Arc<RunBridge>>| handle_request(req, None, app)),
@@ -221,4 +144,46 @@ pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Re
     .bind((host, port))?
     .run()
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::Cookie;
+    use actix_web::test::TestRequest;
+
+    #[actix_rt::test]
+    async fn convert_request_extracts_query_headers_and_cookies() {
+        let req = TestRequest::get()
+            .uri("/items/123?tag=a&tag=b")
+            .insert_header(("X-Test", "one"))
+            .insert_header(("Cookie", "session=abc; theme=dark"))
+            .to_http_request();
+
+        let request = convert_request(&req, "/items/123".to_string(), None).await;
+        assert_eq!(request.query.get_all("tag"), vec!["a", "b"]);
+        assert_eq!(request.headers.get("x-test"), Some("one"));
+        assert_eq!(request.cookies.len(), 2);
+        assert_eq!(request.cookies[0].name, "session");
+    }
+
+    #[test]
+    fn convert_to_http_response_preserves_multiple_cookies() {
+        let response = Response::ok()
+            .append_header("X-Test", "one")
+            .append_header("X-Test", "two")
+            .with_cookie(Cookie::new("session", "abc"))
+            .with_cookie(Cookie::new("theme", "dark"));
+
+        let http_response = convert_to_http_response(response);
+        let headers = http_response.headers();
+        let set_cookie_values: Vec<_> = headers
+            .get_all("Set-Cookie")
+            .filter_map(|value| value.to_str().ok())
+            .collect();
+
+        assert_eq!(set_cookie_values.len(), 2);
+        assert!(set_cookie_values.iter().any(|value| value.starts_with("session=abc")));
+        assert!(set_cookie_values.iter().any(|value| value.starts_with("theme=dark")));
+    }
 }

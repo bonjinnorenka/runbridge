@@ -1,71 +1,148 @@
-# API設計ドキュメント
+# RunBridge API設計メモ
 
-## 概要
-本APIは、AWS LambdaおよびGoogle Cloud Run向けに同一のコードベースで動作するRustライブラリの共通抽象化レイヤーとして設計されています。actix-webに似た操作性を目指し、シンプルなルーティング定義やミドルウェアによる拡張、統一的なエラーハンドリングを提供します。
+## P0 core 方針
 
-## 1. 共通APIインターフェース
-- **エンドポイント登録:**  
-  クライアントはシンプルなDSLまたはマクロを用いて、ルーティング定義を行います。
-- **リクエスト/レスポンス処理:**  
-  Lambda（API Gatewayイベント）やCloud Run（HTTPリクエスト）といった異なる入力形式を内部で共通の`Request`および`Response`型に統一します。
-- **ミドルウェアサポート:**  
-  認証、認可、ロギング、エラーハンドリングなどの機能をミドルウェアとして登録可能とし、各エンドポイントで利用されます。
+P0 では RunBridge の core を以下の責務に分離した。
 
-## 2. 利用可能なエンドポイント例
-### GET /
-- **機能:** サービスのヘルスチェックおよびバージョン情報の返却  
-- **説明:** サービス内部の基本状態や現在のバージョン情報を提供する簡易なエンドポイントです。
+- `router`: path template の解決、path params 抽出、405 / 404 / fallback 判定
+- `endpoint`: `Handler` trait による request -> response 実行
+- `middleware chain`: `next` モデルで request / response を包み込む
+- `backend adapter`: Lambda / Cloud Run / CGI と core request/response の相互変換
 
-### GET /items
-- **機能:** リソース（例：アイテム）の一覧取得  
-- **説明:** 登録済みのアイテム情報をデータベースやキャッシュから取得し、一覧として返却します。
+## Core HTTP model
 
-### POST /items
-- **機能:** 新規リソースの作成  
-- **説明:** リクエストボディに含まれる入力データをもとに、新たなアイテムを作成します。入力データのバリデーションとエラー処理も実施します。
+### Request
 
-### GET /items/{id}
-- **機能:** 単一リソースの詳細取得  
-- **説明:** パスパラメータとして指定された`id`に対応するアイテムの詳細情報を返却します。
+`Request` は以下を持つ。
 
-### PUT /items/{id}
-- **機能:** リソースの更新  
-- **説明:** 指定された`id`のアイテム情報を、リクエストデータに基づいて更新します。バリデーションやエラーチェックも行います。
+- `method: Method`
+- `path: String`
+- `query: QueryMap`
+- `headers: HeaderMap`
+- `path_params: HashMap<String, String>`
+- `cookies: Vec<Cookie>`
+- `body: Option<Bytes>`
+- `context: RequestContext`
 
-### DELETE /items/{id}
-- **機能:** リソースの削除  
-- **説明:** 特定の`id`を持つリソースを削除し、関連するデータのクリーンアップ処理を行います。
+### Response
 
-## 3. プラットフォームごとの実装特徴
-### AWS Lambda向け (feature: lambda)
-- **イベント変換:**  
-  API Gatewayから送信されるLambdaイベントを、内部で共通の`Request`形式に変換します。
-- **非同期処理:**  
-  `lambda_runtime`や`aws_lambda_events`を活用し、非同期処理で効率的にリクエストを処理します。
-- **リソース最適化:**  
-  Lambdaのタイムアウトやリソース制約に配慮した実装を行い、安定した動作を確保します。
+`Response` は以下を持つ。
 
-### Cloud Run向け (feature: cloud_run)
-- **HTTPサーバ:**  
-  actix-webや類似のHTTPサーバクレートを使用し、標準的なHTTPリクエストベースのエンドポイントを提供します。
-- **ルーティングとミドルウェア:**  
-  クライアントはシンプルなAPI定義でエンドポイントを登録でき、必要に応じたミドルウェアの設定が可能です。
-- **スケーラビリティ:**  
-  Cloud Runの特徴に合わせた負荷分散、リトライやキャッシュ連携など、拡張性を持った設計を採用します。
+- `status: u16`
+- `headers: HeaderMap`
+- `cookies: Vec<Cookie>`
+- `body: Option<Bytes>`
 
-## 4. エラーハンドリングおよびロギング
-- **統一的アプローチ:**  
-  全エンドポイントに対して、共通のエラーハンドリングメカニズムを提供し、詳細なエラーメッセージを`log`クレートを用いて記録します。
-- **ログ管理:**  
-  ログレベルや出力先は環境変数等により柔軟にカスタマイズ可能です。
+### HeaderMap
 
-## 5. 開発者向けガイドと拡張性
-- **シンプルなAPI登録:**  
-  開発者はわかりやすいルーティング定義の仕組みを利用して、短いコードでエンドポイントを追加可能です。
-- **拡張性:**  
-  将来的には認証・認可機能、APIバージョン管理、Rate Limitingなどの機能を追加できるように設計されています。
-- **テストとドキュメンテーション:**  
-  各エンドポイントはユニットテストおよび統合テストで動作確認を行い、十分なドキュメントを整備します。
+- case-insensitive
+- multi-value
+- `Set-Cookie` は `Response.cookies` に分離
 
-## 結論
-この設計により、AWS LambdaとGoogle Cloud Runの両環境で共通のAPIインターフェースを提供しながら、プラットフォーム固有の違いを内部で吸収。開発者は統一されたインターフェースを用いることで、迅速かつ安全にサービスを構築できるようになります。
+### QueryMap
+
+- multi-value
+- `get()` と `get_all()` の両方を提供
+- duplicate key を保持
+
+## Routing
+
+### Public surface
+
+- `handler::get("/users/{id}", ...)`
+- `handler::route(Method::PATCH, "/users/{id}", custom_handler)`
+
+### Template rules
+
+- static segment と `{param}` segment のみ対応
+- trailing slash は区別する
+- regex route はサポートしない
+
+### Resolution rules
+
+- static route > param route
+- 同率なら static segment 数が多い方
+- 完全同率なら先登録優先
+
+### RouteMatch
+
+- `Matched { route, path_params }`
+- `MethodNotAllowed { allow }`
+- `NotFound`
+
+`MethodNotAllowed` では `Allow` ヘッダーを返す。fallback は `NotFound` のときだけ使う。
+
+## Handler / Extractor
+
+### Handler
+
+`Handler` は call-only。
+
+```rust
+#[async_trait]
+pub trait Handler: Send + Sync {
+    async fn handle(&self, req: Request) -> Result<Response, Error>;
+}
+```
+
+route metadata は `Route` が持つ。
+
+### Extractor traits
+
+- `FromRequestParts`
+- `FromRequest`
+- `IntoResponse`
+
+### P0 concrete extractors
+
+- `Path<T>`
+- `Query<T>`
+- `Json<T>`
+- `State<T>`
+
+`Json<T>` は body-consuming extractor。P0 では既存 builder の `Request + T` 形を互換レイヤとして残し、内部で `Json<T>` を使う。
+
+## Middleware
+
+```rust
+#[async_trait]
+pub trait Middleware: Send + Sync {
+    async fn handle(&self, req: Request, next: Next<'_>) -> Result<Response, Error>;
+}
+```
+
+- app-level middleware のみ P0 対応
+- 登録順の先頭が最外周
+- 404 / 405 / fallback / matched route のすべてを包む
+
+## App state
+
+- `RunBridge::builder().state(Arc<T>)`
+- `State<T>` extractor で取得
+- 複数依存は 1 つの state struct に束ねる前提
+
+## Backend adapter responsibility
+
+### Lambda
+
+- `raw_path`, `raw_query_string`, `cookies`, `path_parameters`, `headers`, `body`
+- response cookie は `ApiGatewayV2httpResponse.cookies`
+
+### Cloud Run
+
+- request header は `get_all()` で multi-value を保持
+- raw query から `QueryMap` を構築
+- response は `append_header` と複数 `Set-Cookie` で返す
+
+### CGI
+
+- env / stdin から `Request` を構築
+- response cookie は複数 `Set-Cookie` 行で出力
+
+## P0 migration summary
+
+- `query_params` -> `query`
+- regex route -> path template
+- `pre_process/post_process` -> `handle(req, next)`
+- `find_handler()` -> `resolve()` / `handle_request()`
+- `headers["Set-Cookie"]` -> `Response.cookies`
