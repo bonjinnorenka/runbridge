@@ -143,6 +143,15 @@ mod tests {
         }
     }
 
+    struct ErrorMiddleware;
+
+    #[async_trait]
+    impl Middleware for ErrorMiddleware {
+        async fn handle(&self, _req: Request, _next: Next<'_>) -> Result<Response, Error> {
+            Err(Error::AuthenticationError("denied".to_string()))
+        }
+    }
+
     #[tokio::test]
     async fn test_middleware_chain() {
         let app = RunBridge::builder()
@@ -563,6 +572,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cors_actual_request_preserves_headers_on_handler_error() {
+        let cors = Cors::new()
+            .allow_origin("https://example.com")
+            .allow_methods([Method::GET]);
+
+        let app = RunBridge::builder()
+            .middleware(cors)
+            .handler(handler::get(
+                "/boom",
+                |_req: Request| -> Result<Response, Error> {
+                    Err(Error::InternalServerError("db failed".to_string()))
+                },
+            ))
+            .build();
+
+        let response = app
+            .handle_request(
+                Request::new(Method::GET, "/boom".to_string())
+                    .with_header("Origin", "https://example.com"),
+            )
+            .await;
+
+        assert_eq!(response.status, 500);
+        assert_eq!(
+            response.headers.get("Access-Control-Allow-Origin"),
+            Some("https://example.com")
+        );
+        assert_eq!(response.headers.get_all("Vary"), vec!["Origin"]);
+        assert_eq!(
+            String::from_utf8(response.body.unwrap().to_vec()).unwrap(),
+            "Internal Server Error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cors_actual_request_preserves_headers_with_custom_error_handler() {
+        let cors = Cors::new()
+            .allow_origin("https://example.com")
+            .allow_methods([Method::GET]);
+
+        let app = RunBridge::builder()
+            .error_handler(error_handler(|req, err| {
+                let path = req.path.clone();
+                let status = err.status_code();
+                async move {
+                    Response::with_status(StatusCode::InternalServerError)
+                        .with_header("Content-Type", "application/json")
+                        .with_body(
+                            serde_json::to_vec(&serde_json::json!({
+                                "path": path,
+                                "status": status,
+                            }))
+                            .unwrap(),
+                        )
+                }
+            }))
+            .middleware(cors)
+            .handler(handler::get(
+                "/boom",
+                |_req: Request| -> Result<Response, Error> {
+                    Err(Error::InternalServerError("db failed".to_string()))
+                },
+            ))
+            .build();
+
+        let response = app
+            .handle_request(
+                Request::new(Method::GET, "/boom".to_string())
+                    .with_header("Origin", "https://example.com"),
+            )
+            .await;
+
+        assert_eq!(response.status, 500);
+        assert_eq!(
+            response.headers.get("Access-Control-Allow-Origin"),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            response.headers.get("Content-Type"),
+            Some("application/json")
+        );
+
+        let body: serde_json::Value =
+            serde_json::from_slice(response.body.as_ref().unwrap()).unwrap();
+        assert_eq!(body["path"], "/boom");
+        assert_eq!(body["status"], 500);
+    }
+
+    #[tokio::test]
+    async fn test_cors_actual_request_preserves_headers_on_middleware_error() {
+        let cors = Cors::new()
+            .allow_origin("https://example.com")
+            .allow_methods([Method::GET]);
+
+        let app = RunBridge::builder()
+            .middleware(cors)
+            .middleware(ErrorMiddleware)
+            .handler(handler::get("/cors", |_req: Request| {
+                Ok(Response::ok().with_body("ok".as_bytes().to_vec()))
+            }))
+            .build();
+
+        let response = app
+            .handle_request(
+                Request::new(Method::GET, "/cors".to_string())
+                    .with_header("Origin", "https://example.com"),
+            )
+            .await;
+
+        assert_eq!(response.status, 401);
+        assert_eq!(
+            response.headers.get("Access-Control-Allow-Origin"),
+            Some("https://example.com")
+        );
+        assert_eq!(response.headers.get_all("Vary"), vec!["Origin"]);
+    }
+
+    #[tokio::test]
     async fn test_cors_disallowed_origin_and_invalid_config() {
         let cors = Cors::new()
             .allow_origin("https://allowed.example")
@@ -589,5 +716,114 @@ mod tests {
 
         let invalid = Cors::new().allow_any_origin().allow_credentials(true);
         assert!(invalid.try_validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_router_scoped_middleware_applies_to_not_found_and_method_not_allowed() {
+        let api_router = Router::new()
+            .middleware(ShortCircuitMiddleware)
+            .route(handler::get("/items", |_req: Request| {
+                Ok(Response::ok().with_body("ok".as_bytes().to_vec()))
+            }));
+
+        let app = RunBridge::builder().nest("/api", api_router).build();
+
+        let not_found = app
+            .handle_request(Request::new(Method::GET, "/api/missing".to_string()))
+            .await;
+        assert_eq!(not_found.status, 401);
+        assert_eq!(
+            String::from_utf8(not_found.body.unwrap().to_vec()).unwrap(),
+            "blocked"
+        );
+
+        let method_not_allowed = app
+            .handle_request(Request::new(Method::POST, "/api/items".to_string()))
+            .await;
+        assert_eq!(method_not_allowed.status, 401);
+        assert_eq!(
+            String::from_utf8(method_not_allowed.body.unwrap().to_vec()).unwrap(),
+            "blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_router_scoped_post_processing_applies_to_not_found_and_method_not_allowed() {
+        let api_router = Router::new()
+            .middleware(HeaderMiddleware { value: "api" })
+            .route(handler::get("/items", |_req: Request| {
+                Ok(Response::ok().with_body("ok".as_bytes().to_vec()))
+            }));
+
+        let app = RunBridge::builder().nest("/api", api_router).build();
+
+        let not_found = app
+            .handle_request(Request::new(Method::GET, "/api/missing".to_string()))
+            .await;
+        assert_eq!(not_found.status, 404);
+        assert_eq!(not_found.headers.get_all("X-Order"), vec!["api"]);
+
+        let method_not_allowed = app
+            .handle_request(Request::new(Method::POST, "/api/items".to_string()))
+            .await;
+        assert_eq!(method_not_allowed.status, 405);
+        assert_eq!(method_not_allowed.headers.get_all("X-Order"), vec!["api"]);
+    }
+
+    #[tokio::test]
+    async fn test_router_scoped_middleware_applies_to_fallback() {
+        let api_router = Router::new().middleware(HeaderMiddleware { value: "api" });
+
+        let app = RunBridge::builder()
+            .nest("/api", api_router)
+            .fallback(handler::fallback(|req: Request| {
+                Ok(Response::not_found().with_body(format!("fallback: {}", req.path).into_bytes()))
+            }))
+            .build();
+
+        let response = app
+            .handle_request(Request::new(Method::GET, "/api/missing".to_string()))
+            .await;
+
+        assert_eq!(response.status, 404);
+        assert_eq!(response.headers.get_all("X-Order"), vec!["api"]);
+        assert_eq!(
+            String::from_utf8(response.body.unwrap().to_vec()).unwrap(),
+            "fallback: /api/missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_router_scoped_middleware_respects_prefix_boundaries() {
+        let app = RunBridge::builder()
+            .nest("/api", Router::new().middleware(ShortCircuitMiddleware))
+            .build();
+
+        let response = app
+            .handle_request(Request::new(Method::GET, "/api2/missing".to_string()))
+            .await;
+
+        assert_eq!(response.status, 404);
+        assert_eq!(
+            String::from_utf8(response.body.unwrap().to_vec()).unwrap(),
+            "Not Found"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nested_router_scoped_post_processing_order_for_not_found() {
+        let admin_router = Router::new().middleware(HeaderMiddleware { value: "admin" });
+        let api_router = Router::new()
+            .middleware(HeaderMiddleware { value: "api" })
+            .nest("/admin", admin_router);
+
+        let app = RunBridge::builder().nest("/api", api_router).build();
+
+        let response = app
+            .handle_request(Request::new(Method::GET, "/api/admin/missing".to_string()))
+            .await;
+
+        assert_eq!(response.status, 404);
+        assert_eq!(response.headers.get_all("X-Order"), vec!["admin", "api"]);
     }
 }

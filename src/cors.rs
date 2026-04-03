@@ -142,6 +142,32 @@ impl Cors {
             .iter()
             .any(|allowed| allowed.to_string().eq_ignore_ascii_case(method))
     }
+
+    fn apply_actual_request_headers(
+        &self,
+        mut response: Response,
+        origin: Option<&str>,
+    ) -> Response {
+        let Some(origin) = origin else {
+            return response;
+        };
+
+        if let Some(allow_origin) = self.allowed_origin_value(origin) {
+            response = response.with_header("Access-Control-Allow-Origin", allow_origin);
+            if self.allow_credentials {
+                response = response.with_header("Access-Control-Allow-Credentials", "true");
+            }
+            if !self.expose_headers.is_empty() {
+                response = response.with_header(
+                    "Access-Control-Expose-Headers",
+                    self.expose_headers.join(", "),
+                );
+            }
+            response = append_vary(response, "Origin");
+        }
+
+        response
+    }
 }
 
 #[async_trait]
@@ -193,25 +219,9 @@ impl Middleware for Cors {
         }
 
         let origin = req.headers.get("origin").map(str::to_string);
-        let mut response = next.run(req).await?;
+        let response = next.run(req).await?;
 
-        if let Some(origin) = origin {
-            if let Some(allow_origin) = self.allowed_origin_value(&origin) {
-                response = response.with_header("Access-Control-Allow-Origin", allow_origin);
-                if self.allow_credentials {
-                    response = response.with_header("Access-Control-Allow-Credentials", "true");
-                }
-                if !self.expose_headers.is_empty() {
-                    response = response.with_header(
-                        "Access-Control-Expose-Headers",
-                        self.expose_headers.join(", "),
-                    );
-                }
-                response = append_vary(response, "Origin");
-            }
-        }
-
-        Ok(response)
+        Ok(self.apply_actual_request_headers(response, origin.as_deref()))
     }
 }
 

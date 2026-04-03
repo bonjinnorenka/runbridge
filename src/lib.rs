@@ -67,7 +67,7 @@ pub use cors::*;
 pub use error::*;
 pub use error_handler::*;
 pub use handler::*;
-pub use router::*;
+pub use router::Router;
 
 use async_trait::async_trait;
 use std::any::Any;
@@ -77,16 +77,24 @@ use std::sync::Arc;
 /// リクエストを処理するアプリケーションを構築するためのビルダー
 pub struct RunBridgeBuilder {
     routes: Vec<handler::Route>,
+    router_scopes: Vec<router::RouterScope>,
     middlewares: Vec<Arc<dyn common::Middleware>>,
     fallback: Option<Arc<dyn common::Handler>>,
     state: Option<Arc<dyn Any + Send + Sync>>,
     error_handler: Arc<dyn error_handler::ErrorHandler>,
 }
 
+impl Default for RunBridgeBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RunBridgeBuilder {
     pub fn new() -> Self {
         Self {
             routes: Vec::new(),
+            router_scopes: Vec::new(),
             middlewares: Vec::new(),
             fallback: None,
             state: None,
@@ -137,7 +145,9 @@ impl RunBridgeBuilder {
     }
 
     pub fn router(mut self, router: router::Router) -> Self {
-        for route in router.into_routes() {
+        let (routes, scopes) = router.into_parts();
+        self.router_scopes.extend(scopes);
+        for route in routes {
             self = self.handler(route);
         }
         self
@@ -162,6 +172,7 @@ impl RunBridgeBuilder {
     pub fn build(self) -> RunBridge {
         RunBridge {
             routes: self.routes,
+            router_scopes: self.router_scopes,
             middlewares: self.middlewares,
             fallback: self.fallback,
             state: self.state,
@@ -173,6 +184,7 @@ impl RunBridgeBuilder {
 /// リクエストを処理するアプリケーション
 pub struct RunBridge {
     routes: Vec<handler::Route>,
+    router_scopes: Vec<router::RouterScope>,
     middlewares: Vec<Arc<dyn common::Middleware>>,
     fallback: Option<Arc<dyn common::Handler>>,
     state: Option<Arc<dyn Any + Send + Sync>>,
@@ -249,6 +261,22 @@ impl RunBridge {
         handler::RouteMatch::MethodNotAllowed { allow }
     }
 
+    fn collect_router_middlewares(&self, path: &str) -> Vec<Arc<dyn common::Middleware>> {
+        let mut scopes = self
+            .router_scopes
+            .iter()
+            .filter(|scope| scope.matches(path) && !scope.middlewares().is_empty())
+            .collect::<Vec<_>>();
+        scopes.sort_by_key(|scope| scope.depth());
+
+        let mut middlewares = Vec::new();
+        for scope in scopes {
+            middlewares.extend(scope.middlewares().iter().cloned());
+        }
+
+        middlewares
+    }
+
     pub async fn handle_request(&self, mut request: common::Request) -> common::Response {
         let is_head_request = request.method == common::Method::HEAD;
         request.path_params.clear();
@@ -257,15 +285,15 @@ impl RunBridge {
             .set_app_state(self.state.as_ref().map(Arc::clone));
 
         let static_handler;
-        let route_middlewares: &[Arc<dyn common::Middleware>];
+        let route_middlewares: Vec<Arc<dyn common::Middleware>>;
         let endpoint: &dyn common::Handler = match self.resolve(&request.path, &request.method) {
             handler::RouteMatch::Matched { route, path_params } => {
                 request.path_params = path_params;
-                route_middlewares = route.middlewares();
+                route_middlewares = route.middlewares().to_vec();
                 route.handler().as_ref()
             }
             handler::RouteMatch::MethodNotAllowed { allow } => {
-                route_middlewares = &[];
+                route_middlewares = self.collect_router_middlewares(&request.path);
                 let allow_header = allow
                     .iter()
                     .map(ToString::to_string)
@@ -280,7 +308,7 @@ impl RunBridge {
                 &static_handler
             }
             handler::RouteMatch::NotFound => {
-                route_middlewares = &[];
+                route_middlewares = self.collect_router_middlewares(&request.path);
                 if let Some(fallback) = &self.fallback {
                     fallback.as_ref()
                 } else {
@@ -300,6 +328,8 @@ impl RunBridge {
         let next = common::Next {
             middlewares: &middlewares,
             endpoint,
+            error_handler: self.error_handler.as_ref(),
+            error_request: &error_request,
         };
 
         let mut response = match next.run(request).await {
