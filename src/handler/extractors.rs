@@ -14,6 +14,8 @@ use super::response::IntoResponse;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExtractErrorKind {
     BadRequest,
+    UnsupportedMediaType,
+    UnprocessableEntity,
     InternalServerError,
 }
 
@@ -39,6 +41,20 @@ impl ExtractError {
         }
     }
 
+    pub fn unsupported_media_type(message: impl Into<String>) -> Self {
+        Self {
+            kind: ExtractErrorKind::UnsupportedMediaType,
+            message: message.into(),
+        }
+    }
+
+    pub fn unprocessable_entity(message: impl Into<String>) -> Self {
+        Self {
+            kind: ExtractErrorKind::UnprocessableEntity,
+            message: message.into(),
+        }
+    }
+
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -50,6 +66,12 @@ impl IntoResponse for ExtractError {
             ExtractErrorKind::BadRequest => Response::bad_request()
                 .with_header("Content-Type", "text/plain")
                 .with_body("Bad Request".as_bytes().to_vec()),
+            ExtractErrorKind::UnsupportedMediaType => Response::unsupported_media_type()
+                .with_header("Content-Type", "text/plain")
+                .with_body("Unsupported Media Type".as_bytes().to_vec()),
+            ExtractErrorKind::UnprocessableEntity => Response::unprocessable_entity()
+                .with_header("Content-Type", "text/plain")
+                .with_body("Unprocessable Entity".as_bytes().to_vec()),
             ExtractErrorKind::InternalServerError => Response::internal_server_error()
                 .with_header("Content-Type", "text/plain")
                 .with_body("Internal Server Error".as_bytes().to_vec()),
@@ -215,7 +237,7 @@ where
             .ok_or_else(|| ExtractError::bad_request("missing Content-Type header"))?;
 
         if !is_json_like_content_type(content_type) {
-            return Err(ExtractError::bad_request(format!(
+            return Err(ExtractError::unsupported_media_type(format!(
                 "unsupported Content-Type: {}",
                 content_type
             )));
@@ -261,7 +283,7 @@ where
             .ok_or_else(|| ExtractError::bad_request("missing Content-Type header"))?;
 
         if !is_form_content_type(content_type) {
-            return Err(ExtractError::bad_request(format!(
+            return Err(ExtractError::unsupported_media_type(format!(
                 "unsupported Content-Type: {}",
                 content_type
             )));

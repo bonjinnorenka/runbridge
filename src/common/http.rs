@@ -24,6 +24,8 @@ pub enum StatusCode {
     NotFound = 404,
     MethodNotAllowed = 405,
     Conflict = 409,
+    PayloadTooLarge = 413,
+    UnsupportedMediaType = 415,
     UnprocessableEntity = 422,
     Locked = 423,
     TooManyRequests = 429,
@@ -31,11 +33,37 @@ pub enum StatusCode {
     NotImplemented = 501,
     BadGateway = 502,
     ServiceUnavailable = 503,
+    GatewayTimeout = 504,
 }
 
 impl StatusCode {
     pub fn as_u16(&self) -> u16 {
         *self as u16
+    }
+
+    pub fn from_u16(code: u16) -> Option<Self> {
+        match code {
+            200 => Some(StatusCode::Ok),
+            201 => Some(StatusCode::Created),
+            204 => Some(StatusCode::NoContent),
+            400 => Some(StatusCode::BadRequest),
+            401 => Some(StatusCode::Unauthorized),
+            403 => Some(StatusCode::Forbidden),
+            404 => Some(StatusCode::NotFound),
+            405 => Some(StatusCode::MethodNotAllowed),
+            409 => Some(StatusCode::Conflict),
+            413 => Some(StatusCode::PayloadTooLarge),
+            415 => Some(StatusCode::UnsupportedMediaType),
+            422 => Some(StatusCode::UnprocessableEntity),
+            423 => Some(StatusCode::Locked),
+            429 => Some(StatusCode::TooManyRequests),
+            500 => Some(StatusCode::InternalServerError),
+            501 => Some(StatusCode::NotImplemented),
+            502 => Some(StatusCode::BadGateway),
+            503 => Some(StatusCode::ServiceUnavailable),
+            504 => Some(StatusCode::GatewayTimeout),
+            _ => None,
+        }
     }
 
     pub fn reason_phrase(&self) -> &'static str {
@@ -49,6 +77,8 @@ impl StatusCode {
             StatusCode::NotFound => "Not Found",
             StatusCode::MethodNotAllowed => "Method Not Allowed",
             StatusCode::Conflict => "Conflict",
+            StatusCode::PayloadTooLarge => "Payload Too Large",
+            StatusCode::UnsupportedMediaType => "Unsupported Media Type",
             StatusCode::UnprocessableEntity => "Unprocessable Entity",
             StatusCode::Locked => "Locked",
             StatusCode::TooManyRequests => "Too Many Requests",
@@ -56,6 +86,7 @@ impl StatusCode {
             StatusCode::NotImplemented => "Not Implemented",
             StatusCode::BadGateway => "Bad Gateway",
             StatusCode::ServiceUnavailable => "Service Unavailable",
+            StatusCode::GatewayTimeout => "Gateway Timeout",
         }
     }
 
@@ -635,22 +666,51 @@ impl Response {
         Self::new(405)
     }
 
+    pub fn conflict() -> Self {
+        Self::new(409)
+    }
+
+    pub fn payload_too_large() -> Self {
+        Self::new(413)
+    }
+
+    pub fn unsupported_media_type() -> Self {
+        Self::new(415)
+    }
+
+    pub fn unprocessable_entity() -> Self {
+        Self::new(422)
+    }
+
+    pub fn too_many_requests() -> Self {
+        Self::new(429)
+    }
+
     pub fn internal_server_error() -> Self {
         Self::new(500)
     }
 
-    pub fn from_error(error: &crate::error::Error) -> Self {
+    pub fn not_implemented() -> Self {
+        Self::new(501)
+    }
+
+    pub fn bad_gateway() -> Self {
+        Self::new(502)
+    }
+
+    pub fn service_unavailable() -> Self {
+        Self::new(503)
+    }
+
+    pub fn gateway_timeout() -> Self {
+        Self::new(504)
+    }
+
+    pub fn from_error(error: &Error) -> Self {
         let status = error.status_code();
-        let message = match status {
-            400 => "Bad Request",
-            401 => "Unauthorized",
-            403 => "Forbidden",
-            404 => "Not Found",
-            405 => "Method Not Allowed",
-            413 => "Payload Too Large",
-            500 | 502 => "Internal Server Error",
-            _ => "Error",
-        };
+        let message = StatusCode::from_u16(status)
+            .map(|status| status.reason_phrase())
+            .unwrap_or("Error");
         Response::new(status)
             .with_header("Content-Type", "text/plain")
             .with_body(message.as_bytes().to_vec())

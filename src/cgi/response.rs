@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use super::error_logging::log_error_to_file;
 use super::validation::{is_valid_header_name, is_valid_header_value};
-use crate::common::Response;
+use crate::common::{Response, StatusCode};
 use crate::error::Error;
 
 pub fn write_response_to<W: Write>(mut response: Response, out: &mut W) -> Result<(), Error> {
@@ -33,19 +33,9 @@ pub fn write_response_to<W: Write>(mut response: Response, out: &mut W) -> Resul
         sanitized_headers.push((name.to_string(), value.to_string()));
     }
 
-    let reason_phrase = match response.status {
-        200 => "OK",
-        201 => "Created",
-        204 => "No Content",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        413 => "Payload Too Large",
-        500 => "Internal Server Error",
-        _ => "Unknown",
-    };
+    let reason_phrase = StatusCode::from_u16(response.status)
+        .map(|status| status.reason_phrase())
+        .unwrap_or("Unknown");
 
     out.write_all(format!("Status: {} {}\r\n", response.status, reason_phrase).as_bytes())
         .map_err(|e| Error::InternalServerError(format!("Failed to write status line: {}", e)))?;

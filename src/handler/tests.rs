@@ -208,6 +208,17 @@ async fn test_non_json_content_type_is_rejected() {
         .with_body(serde_json::to_vec(&test_data).unwrap());
 
     let result = route.handle(req).await.unwrap();
+    assert_eq!(result.status, 415);
+}
+
+#[tokio::test]
+async fn test_invalid_json_body_is_rejected_as_bad_request() {
+    let route = post("/users", test_post_handler);
+    let req = Request::new(Method::POST, "/users".to_string())
+        .with_header("Content-Type", "application/json")
+        .with_body(br#"{"name":"broken","value":}"#.to_vec());
+
+    let result = route.handle(req).await.unwrap();
     assert_eq!(result.status, 400);
 }
 
@@ -423,7 +434,11 @@ async fn test_form_extractor_rejects_wrong_content_type() {
     let req = Request::new(Method::POST, "/submit".to_string())
         .with_header("Content-Type", "multipart/form-data; boundary=abc")
         .with_body("tag=a&page=1");
-    assert!(Form::<TestFormRequest>::from_request(&req).await.is_err());
+    let err = Form::<TestFormRequest>::from_request(&req)
+        .await
+        .expect_err("wrong content type should be rejected");
+    let response = err.into_response();
+    assert_eq!(response.status, 415);
 }
 
 #[tokio::test]

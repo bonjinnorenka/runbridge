@@ -118,13 +118,95 @@ fn test_from_error_internal_server_error_hides_details() {
 }
 
 #[test]
-fn test_from_error_not_found_hides_details() {
+fn test_from_error_route_not_found_hides_details() {
     let err = Error::RouteNotFound("GET /admin/internal".to_string());
     let res = Response::from_error(&err);
     assert_eq!(res.status, 404);
     let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
     assert_eq!(body, "Not Found");
     assert!(!body.contains("/admin/internal"));
+}
+
+#[test]
+fn test_from_error_resource_not_found_hides_details() {
+    let err = Error::ResourceNotFound("user id=123".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 404);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert_eq!(body, "Not Found");
+    assert!(!body.contains("123"));
+}
+
+#[test]
+fn test_from_error_conflict() {
+    let err = Error::Conflict("duplicate username".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 409);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert_eq!(body, "Conflict");
+}
+
+#[test]
+fn test_from_error_unsupported_media_type() {
+    let err = Error::UnsupportedMediaType("text/plain".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 415);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert_eq!(body, "Unsupported Media Type");
+}
+
+#[test]
+fn test_from_error_validation_error() {
+    let err = Error::ValidationError("name is required".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 422);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert_eq!(body, "Unprocessable Entity");
+}
+
+#[test]
+fn test_from_error_too_many_requests() {
+    let err = Error::TooManyRequests("rate limited".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 429);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert_eq!(body, "Too Many Requests");
+}
+
+#[test]
+fn test_from_error_not_implemented() {
+    let err = Error::NotImplemented("feature pending".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 501);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert_eq!(body, "Not Implemented");
+}
+
+#[test]
+fn test_from_error_external_service_error() {
+    let err = Error::ExternalServiceError("upstream returned garbage".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 502);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert_eq!(body, "Bad Gateway");
+}
+
+#[test]
+fn test_from_error_service_unavailable() {
+    let err = Error::ServiceUnavailable("db pool exhausted".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 503);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert_eq!(body, "Service Unavailable");
+}
+
+#[test]
+fn test_from_error_gateway_timeout() {
+    let err = Error::GatewayTimeout("upstream timeout".to_string());
+    let res = Response::from_error(&err);
+    assert_eq!(res.status, 504);
+    let body = String::from_utf8(res.body.unwrap().to_vec()).unwrap();
+    assert_eq!(body, "Gateway Timeout");
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -171,21 +253,92 @@ fn test_status_code() {
     assert_eq!(StatusCode::Created.as_u16(), 201);
     assert_eq!(StatusCode::BadRequest.as_u16(), 400);
     assert_eq!(StatusCode::Unauthorized.as_u16(), 401);
+    assert_eq!(StatusCode::Conflict.as_u16(), 409);
+    assert_eq!(StatusCode::PayloadTooLarge.as_u16(), 413);
+    assert_eq!(StatusCode::UnsupportedMediaType.as_u16(), 415);
+    assert_eq!(StatusCode::UnprocessableEntity.as_u16(), 422);
+    assert_eq!(StatusCode::TooManyRequests.as_u16(), 429);
     assert_eq!(StatusCode::InternalServerError.as_u16(), 500);
+    assert_eq!(StatusCode::NotImplemented.as_u16(), 501);
+    assert_eq!(StatusCode::BadGateway.as_u16(), 502);
+    assert_eq!(StatusCode::ServiceUnavailable.as_u16(), 503);
+    assert_eq!(StatusCode::GatewayTimeout.as_u16(), 504);
 
     assert_eq!(StatusCode::Ok.reason_phrase(), "OK");
     assert_eq!(StatusCode::Created.reason_phrase(), "Created");
     assert_eq!(StatusCode::BadRequest.reason_phrase(), "Bad Request");
     assert_eq!(StatusCode::Unauthorized.reason_phrase(), "Unauthorized");
+    assert_eq!(StatusCode::Conflict.reason_phrase(), "Conflict");
+    assert_eq!(
+        StatusCode::PayloadTooLarge.reason_phrase(),
+        "Payload Too Large"
+    );
+    assert_eq!(
+        StatusCode::UnsupportedMediaType.reason_phrase(),
+        "Unsupported Media Type"
+    );
+    assert_eq!(
+        StatusCode::UnprocessableEntity.reason_phrase(),
+        "Unprocessable Entity"
+    );
+    assert_eq!(
+        StatusCode::TooManyRequests.reason_phrase(),
+        "Too Many Requests"
+    );
     assert_eq!(
         StatusCode::InternalServerError.reason_phrase(),
         "Internal Server Error"
+    );
+    assert_eq!(
+        StatusCode::NotImplemented.reason_phrase(),
+        "Not Implemented"
+    );
+    assert_eq!(StatusCode::BadGateway.reason_phrase(), "Bad Gateway");
+    assert_eq!(
+        StatusCode::ServiceUnavailable.reason_phrase(),
+        "Service Unavailable"
+    );
+    assert_eq!(
+        StatusCode::GatewayTimeout.reason_phrase(),
+        "Gateway Timeout"
     );
 
     assert!(StatusCode::Ok.is_success());
     assert!(!StatusCode::BadRequest.is_success());
     assert!(StatusCode::BadRequest.is_client_error());
+    assert!(StatusCode::Conflict.is_client_error());
+    assert!(StatusCode::PayloadTooLarge.is_client_error());
+    assert!(StatusCode::UnsupportedMediaType.is_client_error());
+    assert!(StatusCode::UnprocessableEntity.is_client_error());
+    assert!(StatusCode::TooManyRequests.is_client_error());
     assert!(StatusCode::InternalServerError.is_server_error());
+    assert!(StatusCode::NotImplemented.is_server_error());
+    assert!(StatusCode::BadGateway.is_server_error());
+    assert!(StatusCode::ServiceUnavailable.is_server_error());
+    assert!(StatusCode::GatewayTimeout.is_server_error());
+}
+
+#[test]
+fn test_status_code_from_u16() {
+    assert_eq!(StatusCode::from_u16(409), Some(StatusCode::Conflict));
+    assert_eq!(StatusCode::from_u16(413), Some(StatusCode::PayloadTooLarge));
+    assert_eq!(
+        StatusCode::from_u16(415),
+        Some(StatusCode::UnsupportedMediaType)
+    );
+    assert_eq!(
+        StatusCode::from_u16(422),
+        Some(StatusCode::UnprocessableEntity)
+    );
+    assert_eq!(StatusCode::from_u16(429), Some(StatusCode::TooManyRequests));
+    assert_eq!(StatusCode::from_u16(501), Some(StatusCode::NotImplemented));
+    assert_eq!(StatusCode::from_u16(502), Some(StatusCode::BadGateway));
+    assert_eq!(
+        StatusCode::from_u16(503),
+        Some(StatusCode::ServiceUnavailable)
+    );
+    assert_eq!(StatusCode::from_u16(504), Some(StatusCode::GatewayTimeout));
+    assert_eq!(StatusCode::from_u16(999), None);
 }
 
 #[test]

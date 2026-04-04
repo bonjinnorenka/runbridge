@@ -137,6 +137,30 @@ fn test_write_response_preserves_binary_body() {
 }
 
 #[test]
+fn test_write_response_status_line_uses_known_reason_phrases() {
+    let cases = [
+        (409, "Status: 409 Conflict\r\n"),
+        (415, "Status: 415 Unsupported Media Type\r\n"),
+        (422, "Status: 422 Unprocessable Entity\r\n"),
+        (429, "Status: 429 Too Many Requests\r\n"),
+        (502, "Status: 502 Bad Gateway\r\n"),
+        (503, "Status: 503 Service Unavailable\r\n"),
+        (504, "Status: 504 Gateway Timeout\r\n"),
+    ];
+
+    for (status, expected_status_line) in cases {
+        let response = Response::new(status);
+        let mut buf: Vec<u8> = Vec::new();
+        write_response_to(response, &mut buf).expect("write_response_to failed");
+        let out = String::from_utf8(buf).expect("utf8");
+        assert!(
+            out.starts_with(expected_status_line),
+            "status={status}, out={out}"
+        );
+    }
+}
+
+#[test]
 fn test_redact_value_for_log() {
     assert_eq!(
         redact_value_for_log("CONTENT_TYPE", "application/json"),
