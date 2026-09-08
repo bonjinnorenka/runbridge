@@ -166,7 +166,6 @@ mod tests {
     use crate::handler;
     use actix_web::test;
     use actix_web::test::TestRequest;
-    use flate2::read::GzDecoder;
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use serde_json::Value;
