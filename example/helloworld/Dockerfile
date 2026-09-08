@@ -1,4 +1,4 @@
-﻿FROM rust:1.82 as builder
+﻿FROM rust:1.84 as builder
 WORKDIR /usr/src/app
 # ルートプロジェクトディレクトリをコピー (Dockerビルドコンテキストを親ディレクトリから開始する必要あり)
 COPY . ./

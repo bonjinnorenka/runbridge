@@ -36,7 +36,7 @@ trap cleanup EXIT
 if ! docker image inspect "$DOCKER_IMAGE" >/dev/null 2>&1; then
     echo -e "${RED}エラー: Dockerイメージ '$DOCKER_IMAGE' が見つかりません${NC}"
     echo "まず以下のコマンドでイメージをビルドしてください:"
-    echo "cd /home/ryokuryu/runbridge && docker build -t runbridge-hello-world:test -f example/helloworld/Dockerfile ."
+    echo "cd $SCRIPT_DIR/../../ && docker build -t runbridge-hello-world:test -f example/helloworld/Dockerfile ."
     exit 1
 fi
 
