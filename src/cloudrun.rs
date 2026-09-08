@@ -545,10 +545,7 @@ mod tests {
 
         assert_eq!(response.status(), actix_web::http::StatusCode::OK);
         assert!(
-            response
-                .headers()
-                .get("Content-Encoding")
-                .is_none(),
+            response.headers().get("Content-Encoding").is_none(),
             "Content-Encoding should not be set for identity"
         );
         assert_eq!(
@@ -598,11 +595,8 @@ mod tests {
         )
         .await;
 
-        let response = test::call_service(
-            &service,
-            TestRequest::get().uri("/data").to_request(),
-        )
-        .await;
+        let response =
+            test::call_service(&service, TestRequest::get().uri("/data").to_request()).await;
 
         assert_eq!(response.status(), actix_web::http::StatusCode::OK);
         assert_eq!(
