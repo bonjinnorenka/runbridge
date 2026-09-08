@@ -1,7 +1,6 @@
 //! Google Cloud Run向けの実装
 
 use actix_web::http::header::HeaderMap as ActixHeaderMap;
-use actix_web::middleware::Compress;
 use actix_web::web::Bytes;
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use log::{info, warn};
@@ -148,7 +147,6 @@ pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Re
         let app_data = web::Data::new(app_data.clone());
 
         App::new()
-            .wrap(Compress::default())
             .app_data(app_data.clone())
             .app_data(web::PayloadConfig::new(max_body))
             .configure(configure_cloud_run_routes)
@@ -162,15 +160,12 @@ pub async fn run_cloud_run(app: RunBridge, host: &str, port: u16) -> std::io::Re
 mod tests {
     use super::*;
     use crate::common::Cookie;
-    use crate::common::StatusCode;
     use crate::handler;
     use actix_web::test;
     use actix_web::test::TestRequest;
-    use flate2::read::GzDecoder;
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use serde_json::Value;
-    use std::io::Read;
     use std::io::Write;
     use std::sync::Mutex;
 
@@ -237,52 +232,6 @@ mod tests {
     }
 
     #[actix_rt::test]
-    async fn cloud_run_binary_response_works_with_compression_middleware() {
-        let app = Arc::new(
-            RunBridge::builder()
-                .handler(handler::get("/image", |_req| {
-                    Ok(Response::ok()
-                        .with_header("Content-Type", "image/png")
-                        .with_body(vec![0x89, 0x50, 0x4e, 0x47]))
-                }))
-                .build(),
-        );
-
-        let service = test::init_service(
-            App::new()
-                .wrap(Compress::default())
-                .app_data(web::Data::new(app))
-                .app_data(web::PayloadConfig::new(get_max_body_size()))
-                .configure(configure_cloud_run_routes),
-        )
-        .await;
-
-        let response = test::call_service(
-            &service,
-            TestRequest::get()
-                .uri("/image")
-                .insert_header(("Accept-Encoding", "gzip"))
-                .to_request(),
-        )
-        .await;
-
-        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
-        assert_eq!(
-            response
-                .headers()
-                .get("Content-Type")
-                .and_then(|value| value.to_str().ok()),
-            Some("image/png")
-        );
-
-        let body = actix_web::body::to_bytes(response.into_body())
-            .await
-            .expect("response body must be readable");
-
-        assert_eq!(body.as_ref(), &[0x89, 0x50, 0x4e, 0x47]);
-    }
-
-    #[actix_rt::test]
     async fn cloud_run_accepts_gzip_json_and_exposes_decompressed_request() {
         let seen_request = Arc::new(Mutex::new(None));
         let seen_request_for_handler = Arc::clone(&seen_request);
@@ -304,7 +253,6 @@ mod tests {
 
         let service = test::init_service(
             App::new()
-                .wrap(Compress::default())
                 .app_data(web::Data::new(app))
                 .app_data(web::PayloadConfig::new(get_max_body_size()))
                 .configure(configure_cloud_run_routes),
@@ -349,7 +297,6 @@ mod tests {
         );
         let service = test::init_service(
             App::new()
-                .wrap(Compress::default())
                 .app_data(web::Data::new(app))
                 .app_data(web::PayloadConfig::new(get_max_body_size()))
                 .configure(configure_cloud_run_routes),
@@ -381,7 +328,6 @@ mod tests {
         );
         let service = test::init_service(
             App::new()
-                .wrap(Compress::default())
                 .app_data(web::Data::new(app))
                 .app_data(web::PayloadConfig::new(8))
                 .configure(configure_cloud_run_routes),
@@ -433,347 +379,5 @@ mod tests {
         assert!(set_cookie_values
             .iter()
             .any(|value| value.starts_with("theme=dark")));
-    }
-
-    #[actix_rt::test]
-    async fn cloud_run_compresses_response_with_accept_encoding_gzip() {
-        let large_json = serde_json::json!({
-            "data": "x".repeat(1000),
-            "nested": {
-                "items": vec!["item"; 100]
-            }
-        });
-
-        let json_bytes = serde_json::to_vec(&large_json).unwrap();
-
-        let app = Arc::new(
-            RunBridge::builder()
-                .handler(handler::get("/data", move |_req| {
-                    Ok(Response::ok()
-                        .with_header("Content-Type", "application/json")
-                        .with_body(json_bytes.clone()))
-                }))
-                .build(),
-        );
-
-        let service = test::init_service(
-            App::new()
-                .wrap(Compress::default())
-                .app_data(web::Data::new(app))
-                .app_data(web::PayloadConfig::new(get_max_body_size()))
-                .configure(configure_cloud_run_routes),
-        )
-        .await;
-
-        let response = test::call_service(
-            &service,
-            TestRequest::get()
-                .uri("/data")
-                .insert_header(("Accept-Encoding", "gzip"))
-                .to_request(),
-        )
-        .await;
-
-        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
-        assert_eq!(
-            response
-                .headers()
-                .get("Content-Encoding")
-                .and_then(|value| value.to_str().ok()),
-            Some("gzip")
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get("Content-Type")
-                .and_then(|value| value.to_str().ok()),
-            Some("application/json")
-        );
-
-        let body = actix_web::body::to_bytes(response.into_body())
-            .await
-            .expect("response body must be readable");
-
-        let mut decoder = flate2::read::GzDecoder::new(&body[..]);
-        let mut decompressed = Vec::new();
-        decoder
-            .read_to_end(&mut decompressed)
-            .expect("decompression must succeed");
-
-        let decompressed_json: Value =
-            serde_json::from_slice(&decompressed).expect("decompressed body must be valid JSON");
-        assert_eq!(decompressed_json, large_json);
-    }
-
-    #[actix_rt::test]
-    async fn cloud_run_returns_uncompressed_with_accept_encoding_identity() {
-        let large_json = serde_json::json!({
-            "data": "x".repeat(1000),
-            "nested": {
-                "items": vec!["item"; 100]
-            }
-        });
-
-        let json_bytes = serde_json::to_vec(&large_json).unwrap();
-
-        let app = Arc::new(
-            RunBridge::builder()
-                .handler(handler::get("/data", move |_req| {
-                    Ok(Response::ok()
-                        .with_header("Content-Type", "application/json")
-                        .with_body(json_bytes.clone()))
-                }))
-                .build(),
-        );
-
-        let service = test::init_service(
-            App::new()
-                .wrap(Compress::default())
-                .app_data(web::Data::new(app))
-                .app_data(web::PayloadConfig::new(get_max_body_size()))
-                .configure(configure_cloud_run_routes),
-        )
-        .await;
-
-        let response = test::call_service(
-            &service,
-            TestRequest::get()
-                .uri("/data")
-                .insert_header(("Accept-Encoding", "identity"))
-                .to_request(),
-        )
-        .await;
-
-        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
-        assert!(
-            response
-                .headers()
-                .get("Content-Encoding")
-                .is_none(),
-            "Content-Encoding should not be set for identity"
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get("Content-Type")
-                .and_then(|value| value.to_str().ok()),
-            Some("application/json")
-        );
-
-        let body = actix_web::body::to_bytes(response.into_body())
-            .await
-            .expect("response body must be readable");
-
-        let response_json: Value =
-            serde_json::from_slice(&body).expect("response body must be valid JSON");
-        assert_eq!(response_json, large_json);
-    }
-
-    #[actix_rt::test]
-    async fn cloud_run_returns_normal_response_without_accept_encoding() {
-        let large_json = serde_json::json!({
-            "data": "x".repeat(1000),
-            "nested": {
-                "items": vec!["item"; 100]
-            }
-        });
-
-        let json_bytes = serde_json::to_vec(&large_json).unwrap();
-
-        let app = Arc::new(
-            RunBridge::builder()
-                .handler(handler::get("/data", move |_req| {
-                    Ok(Response::ok()
-                        .with_header("Content-Type", "application/json")
-                        .with_body(json_bytes.clone()))
-                }))
-                .build(),
-        );
-
-        let service = test::init_service(
-            App::new()
-                .wrap(Compress::default())
-                .app_data(web::Data::new(app))
-                .app_data(web::PayloadConfig::new(get_max_body_size()))
-                .configure(configure_cloud_run_routes),
-        )
-        .await;
-
-        let response = test::call_service(
-            &service,
-            TestRequest::get().uri("/data").to_request(),
-        )
-        .await;
-
-        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
-        assert_eq!(
-            response
-                .headers()
-                .get("Content-Type")
-                .and_then(|value| value.to_str().ok()),
-            Some("application/json")
-        );
-
-        let body = actix_web::body::to_bytes(response.into_body())
-            .await
-            .expect("response body must be readable");
-
-        let response_json: Value =
-            serde_json::from_slice(&body).expect("response body must be valid JSON");
-        assert_eq!(response_json, large_json);
-    }
-
-    #[actix_rt::test]
-    async fn cloud_run_does_not_double_compress_already_encoded_response() {
-        let large_json = serde_json::json!({
-            "data": "x".repeat(1000),
-            "nested": {
-                "items": vec!["item"; 100]
-            }
-        });
-
-        let json_bytes = serde_json::to_vec(&large_json).unwrap();
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(&json_bytes)
-            .expect("gzip encoding must succeed");
-        let compressed_body = encoder.finish().expect("gzip finalization must succeed");
-
-        let app = Arc::new(
-            RunBridge::builder()
-                .handler(handler::get("/data", move |_req| {
-                    Ok(Response::ok()
-                        .with_header("Content-Type", "application/json")
-                        .with_header("Content-Encoding", "gzip")
-                        .with_body(compressed_body.clone()))
-                }))
-                .build(),
-        );
-
-        let service = test::init_service(
-            App::new()
-                .wrap(Compress::default())
-                .app_data(web::Data::new(app))
-                .app_data(web::PayloadConfig::new(get_max_body_size()))
-                .configure(configure_cloud_run_routes),
-        )
-        .await;
-
-        let response = test::call_service(
-            &service,
-            TestRequest::get()
-                .uri("/data")
-                .insert_header(("Accept-Encoding", "gzip"))
-                .to_request(),
-        )
-        .await;
-
-        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
-        assert_eq!(
-            response
-                .headers()
-                .get("Content-Encoding")
-                .and_then(|value| value.to_str().ok()),
-            Some("gzip")
-        );
-
-        let body = actix_web::body::to_bytes(response.into_body())
-            .await
-            .expect("response body must be readable");
-
-        let mut decoder = flate2::read::GzDecoder::new(&body[..]);
-        let mut decompressed = Vec::new();
-        decoder
-            .read_to_end(&mut decompressed)
-            .expect("decompression must succeed");
-
-        let decompressed_json: Value =
-            serde_json::from_slice(&decompressed).expect("decompressed body must be valid JSON");
-        assert_eq!(decompressed_json, large_json);
-    }
-
-    #[actix_rt::test]
-    async fn cloud_run_head_request_preserves_body_semantics() {
-        let app = Arc::new(
-            RunBridge::builder()
-                .handler(handler::head("/data", |_req| {
-                    Ok(Response::ok()
-                        .with_header("Content-Type", "application/json")
-                        .with_body(br#"{"message":"hello"}"#.to_vec()))
-                }))
-                .build(),
-        );
-
-        let service = test::init_service(
-            App::new()
-                .wrap(Compress::default())
-                .app_data(web::Data::new(app))
-                .app_data(web::PayloadConfig::new(get_max_body_size()))
-                .configure(configure_cloud_run_routes),
-        )
-        .await;
-
-        let response = test::call_service(
-            &service,
-            TestRequest::default()
-                .method(actix_web::http::Method::HEAD)
-                .uri("/data")
-                .insert_header(("Accept-Encoding", "gzip"))
-                .to_request(),
-        )
-        .await;
-
-        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
-
-        let body = actix_web::body::to_bytes(response.into_body())
-            .await
-            .expect("response body must be readable");
-
-        assert!(
-            body.is_empty(),
-            "HEAD request should return empty body even with compression"
-        );
-    }
-
-    #[actix_rt::test]
-    async fn cloud_run_204_no_content_remains_bodyless() {
-        let app = Arc::new(
-            RunBridge::builder()
-                .handler(handler::post("/data", |_req, _body: Value| {
-                    Ok(Response::with_status(StatusCode::NoContent))
-                }))
-                .build(),
-        );
-
-        let service = test::init_service(
-            App::new()
-                .wrap(Compress::default())
-                .app_data(web::Data::new(app))
-                .app_data(web::PayloadConfig::new(get_max_body_size()))
-                .configure(configure_cloud_run_routes),
-        )
-        .await;
-
-        let response = test::call_service(
-            &service,
-            TestRequest::post()
-                .uri("/data")
-                .insert_header(("Accept-Encoding", "gzip"))
-                .set_json(&serde_json::json!({"test": "data"}))
-                .to_request(),
-        )
-        .await;
-
-        assert_eq!(response.status(), actix_web::http::StatusCode::NO_CONTENT);
-
-        let body = actix_web::body::to_bytes(response.into_body())
-            .await
-            .expect("response body must be readable");
-
-        assert!(
-            body.is_empty(),
-            "204 No Content should remain bodyless even with compression"
-        );
     }
 }
