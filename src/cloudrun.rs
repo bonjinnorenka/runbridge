@@ -505,6 +505,75 @@ mod tests {
     }
 
     #[actix_rt::test]
+    async fn cloud_run_compresses_response_with_accept_encoding_brotli() {
+        let large_json = serde_json::json!({
+            "data": "x".repeat(1000),
+            "nested": {
+                "items": vec!["item"; 100]
+            }
+        });
+
+        let json_bytes = serde_json::to_vec(&large_json).unwrap();
+
+        let app = Arc::new(
+            RunBridge::builder()
+                .handler(handler::get("/data", move |_req| {
+                    Ok(Response::ok()
+                        .with_header("Content-Type", "application/json")
+                        .with_body(json_bytes.clone()))
+                }))
+                .build(),
+        );
+
+        let service = test::init_service(
+            App::new()
+                .wrap(Compress::default())
+                .app_data(web::Data::new(app))
+                .app_data(web::PayloadConfig::new(get_max_body_size()))
+                .configure(configure_cloud_run_routes),
+        )
+        .await;
+
+        let response = test::call_service(
+            &service,
+            TestRequest::get()
+                .uri("/data")
+                .insert_header(("Accept-Encoding", "br"))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("Content-Encoding")
+                .and_then(|value| value.to_str().ok()),
+            Some("br")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Content-Type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/json")
+        );
+
+        let body = actix_web::body::to_bytes(response.into_body())
+            .await
+            .expect("response body must be readable");
+
+        let mut decompressed = Vec::new();
+        brotli::Decompressor::new(&body[..], 4096)
+            .read_to_end(&mut decompressed)
+            .expect("brotli decompression must succeed");
+
+        let decompressed_json: Value =
+            serde_json::from_slice(&decompressed).expect("decompressed body must be valid JSON");
+        assert_eq!(decompressed_json, large_json);
+    }
+
+    #[actix_rt::test]
     async fn cloud_run_returns_uncompressed_with_accept_encoding_identity() {
         let large_json = serde_json::json!({
             "data": "x".repeat(1000),
