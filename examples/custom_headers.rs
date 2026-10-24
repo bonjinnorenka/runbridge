@@ -28,11 +28,11 @@ fn custom_header_handler(_req: Request) -> Result<Response, Error> {
     };
 
     // まずResponseを作成し、ヘッダーを追加してからJSONボディを設定
-    Ok(Response::ok()
+    Response::ok()
         .with_header("X-API-Version", "1.0")
         .with_header("X-Rate-Limit", "100")
         .with_header("X-Rate-Limit-Reset", "3600")
-        .json(&data)?)
+        .json(&data)
 }
 
 // CORSヘッダーを追加する例
@@ -42,14 +42,14 @@ fn cors_handler(_req: Request) -> Result<Response, Error> {
         status: "success".to_string(),
     };
 
-    Ok(Response::ok()
+    Response::ok()
         .with_header("Access-Control-Allow-Origin", "*")
         .with_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         .with_header(
             "Access-Control-Allow-Headers",
             "Content-Type, Authorization",
         )
-        .json(&data)?)
+        .json(&data)
 }
 
 #[tokio::main]
