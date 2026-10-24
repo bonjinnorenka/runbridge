@@ -1,0 +1,43 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  schedule:
+    # 新規Advisoryの検出用（毎週月曜 03:00 UTC）
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install cargo-audit
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-audit
+
+    - name: Run cargo audit (root + example crates)
+      # vulnerability は失敗、unsound/unmaintained/yanked 等の warning は表示のみ（cargo audit の既定動作）
+      run: |
+        # RUSTSEC-2026-0258 (h2 0.3.x): actix-http 3.x（最新 3.19 まで）が h2 ^0.3 を要求し、
+        # 0.3 系に修正版が存在しないため一時的に除外する。actix-http が h2 0.4.16+ に移行したら削除すること。
+        IGNORES="--ignore RUSTSEC-2026-0258"
+        status=0
+        for lock in Cargo.lock example/*/Cargo.lock; do
+          echo "::group::cargo audit --file $lock"
+          cargo audit --file "$lock" $IGNORES || status=1
+          echo "::endgroup::"
+        done
+        exit $status
