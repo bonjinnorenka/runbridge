@@ -822,7 +822,7 @@ mod tests {
             TestRequest::post()
                 .uri("/data")
                 .insert_header(("Accept-Encoding", "gzip"))
-                .set_json(&serde_json::json!({"test": "data"}))
+                .set_json(serde_json::json!({"test": "data"}))
                 .to_request(),
         )
         .await;

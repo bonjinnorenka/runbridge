@@ -217,10 +217,12 @@ mod tests {
 
     #[test]
     fn convert_apigw_request_extracts_query_and_cookies() {
-        let mut event = ApiGatewayV2httpRequest::default();
-        event.raw_path = Some("/items/123".to_string());
-        event.raw_query_string = Some("tag=a&tag=b".to_string());
-        event.cookies = Some(vec!["session=abc".to_string(), "theme=dark".to_string()]);
+        let mut event = ApiGatewayV2httpRequest {
+            raw_path: Some("/items/123".to_string()),
+            raw_query_string: Some("tag=a&tag=b".to_string()),
+            cookies: Some(vec!["session=abc".to_string(), "theme=dark".to_string()]),
+            ..Default::default()
+        };
         event.request_context.http.method = aws_lambda_events::http::Method::GET;
         event.request_context.http.path = Some("/items/123".to_string());
         event.headers.insert(
